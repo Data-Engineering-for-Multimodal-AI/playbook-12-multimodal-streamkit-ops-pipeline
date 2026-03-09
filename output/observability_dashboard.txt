@@ -6,7 +6,7 @@ OBSERVABILITY DASHBOARD
 Pipeline Configuration:
   Case ID:    20240115
   Service:    book_info
-  Timestamp:  2026-03-09T16:51:45.058888
+  Timestamp:  2026-03-09T17:27:03.416880
 
 ──────────────────────────────────────────────────────────────────────
 Processing Summary:

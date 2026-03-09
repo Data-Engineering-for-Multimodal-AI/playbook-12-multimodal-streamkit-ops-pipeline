@@ -27,7 +27,7 @@ VALID_CASES = ["20231207", "20231221", "20240115", "20240124", "20240207", "2024
 def list_available_files(repo_id: str) -> list[str]:
     """List all files available in the HuggingFace repository."""
     try:
-        files = list_repo_files(repo_id=repo_id)
+        files = list_repo_files(repo_id=repo_id, repo_type="dataset")
         return files
     except Exception as e:
         print(f"Error listing files: {e}")
