@@ -1,0 +1,88 @@
+{
+  "timestamp": "2026-03-09T16:51:45.058888",
+  "pipeline_config": {
+    "case": "20240115",
+    "service": "book_info",
+    "data_path": "data/20240115/"
+  },
+  "processing_summary": {
+    "total_anomalies_detected": 386,
+    "affected_pods": 3,
+    "analyses_generated": 3
+  },
+  "actions_summary": {
+    "total_executed": 3,
+    "total_escalated": 8,
+    "total_rejected": 0,
+    "affected_pods": 1,
+    "by_type": {
+      "scale_up": {
+        "count": 1,
+        "avg_confidence": 0.89,
+        "total_confidence": 0.89
+      },
+      "restart": {
+        "count": 1,
+        "avg_confidence": 0.87,
+        "total_confidence": 0.87
+      },
+      "trigger_profiling": {
+        "count": 1,
+        "avg_confidence": 0.85,
+        "total_confidence": 0.85
+      }
+    }
+  },
+  "confidence_distribution": {
+    "very_low": 0,
+    "low": 0,
+    "medium": 0,
+    "high": 0,
+    "very_high": 3
+  },
+  "root_causes": {
+    "Unknown": 3
+  },
+  "top_anomalies": [
+    {
+      "feature": "metric_rate_storage_iops_max",
+      "occurrences": 10
+    },
+    {
+      "feature": "metric_rate_transmitted_packets_p95",
+      "occurrences": 9
+    },
+    {
+      "feature": "metric_memory_usage_mean",
+      "occurrences": 8
+    },
+    {
+      "feature": "metric_rate_storage_iops_std",
+      "occurrences": 8
+    },
+    {
+      "feature": "log_golden_std",
+      "occurrences": 8
+    },
+    {
+      "feature": "metric_rate_received_packets_max",
+      "occurrences": 8
+    },
+    {
+      "feature": "log_frequency_std",
+      "occurrences": 8
+    },
+    {
+      "feature": "metric_rate_transmitted_packets_mean",
+      "occurrences": 7
+    },
+    {
+      "feature": "metric_rate_received_packets_p50",
+      "occurrences": 7
+    },
+    {
+      "feature": "metric_transmit_bandwidth_p99",
+      "occurrences": 7
+    }
+  ]
+}

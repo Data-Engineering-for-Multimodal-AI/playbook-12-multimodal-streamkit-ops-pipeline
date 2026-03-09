@@ -1,0 +1,143 @@
+# StreamKit Ops Playbook Pipeline Configuration
+# Configuration for the six-stage multimodal AI pipeline
+
+# Dataset configuration
+case: "20240115"
+label: "book_info"
+data_path: "data/20240115/"
+
+# Log label for filtering (from HuggingFace dataset)
+log_label: "ratings.book-info.svc.cluster.local:9080/*"
+
+# Metrics to ingest and analyze
+metrics:
+  - cpu_usage
+  - memory_usage
+  - rate_received_packets
+  - rate_transmitted_packets
+  - rate_storage_iops
+  - received_bandwidth
+  - transmit_bandwidth
+
+# Data loading configuration
+data_files:
+  golden_signal: "pod_level_log_golden_signal.npy"
+  frequency: "pod_level_log_frequency.npy"
+  kpi: "kpi.csv"
+
+# Anomaly detection thresholds
+thresholds:
+  # Number of standard deviations above baseline to flag anomaly
+  std_multiplier: 2.0
+
+  # Baseline window: use first N% of data to compute baseline statistics
+  baseline_window_percent: 70
+
+  # Analysis window: analyze remaining N% of data for anomalies
+  analysis_window_percent: 30
+
+# Confidence gating and escalation
+guardrails:
+  # Confidence thresholds
+  confidence_high: 0.85        # Auto-approve actions with >85% confidence
+  confidence_medium: 0.6       # Escalate 60-85% confidence to human
+  confidence_low: 0.6          # Log only <60% confidence (no action)
+
+  # Remediation constraints
+  max_replica_scale: 10        # Never scale beyond 10 replicas
+  max_rollback_rate: 5         # Max rollbacks per minute
+  min_time_between_actions: 30 # Seconds between same action type
+
+  # Rate limiting
+  max_actions_per_minute: 20
+  max_escalations_per_minute: 10
+
+# Allowed remediation actions (from plan stage)
+allowed_actions:
+  - scale_up              # Add replicas
+  - scale_down            # Remove replicas
+  - restart               # Graceful restart
+  - restart_with_debug    # Restart with debug logging
+  - collect_logs          # Trigger log collection
+  - trigger_profiling     # Start CPU/memory profiling
+  - cordon_node           # Mark node as unavailable
+  - force_rebalance       # Force pod rebalancing
+
+# Action severity levels and confidence requirements
+action_policies:
+  scale_up:
+    min_confidence: 0.75
+    requires_escalation: false
+    max_change: 3  # Max replicas to add
+
+  scale_down:
+    min_confidence: 0.80
+    requires_escalation: true
+    max_change: 2
+
+  restart:
+    min_confidence: 0.70
+    requires_escalation: false
+    max_change: 1
+
+  restart_with_debug:
+    min_confidence: 0.65
+    requires_escalation: true
+    max_change: 1
+
+  cordon_node:
+    min_confidence: 0.85
+    requires_escalation: true
+    max_change: 1
+
+  force_rebalance:
+    min_confidence: 0.75
+    requires_escalation: false
+    max_change: 1
+
+# Root cause classification
+root_cause_types:
+  - infinite_loop_bug
+  - malware_deployment
+  - ddos_attack
+  - cryptojacking
+  - storage_full
+  - memory_leak
+  - cpu_throttle
+  - network_saturation
+
+# LLM integration (optional, any OpenAI-compatible API)
+llm:
+  # Set LLM_API_KEY and LLM_BASE_URL environment variables to enable
+  enabled: true  # Auto-detected from environment variable
+  model: "gpt-4o"  # or any model your provider supports
+  temperature: 0.2
+  max_tokens: 1000
+
+# Output and logging
+output:
+  report_dir: "output/"
+  report_name: "observability_report.json"
+  enable_debug_logs: false
+  log_level: "INFO"
+
+# Feature computation parameters
+feature_engineering:
+  # Time window size for computing statistics (seconds)
+  window_size: 300
+
+  # Aggregation methods for fused features
+  aggregation:
+    - mean
+    - std
+    - min
+    - max
+    - p50
+    - p95
+    - p99
+
+# Model parameters for anomaly detection (if using statistical methods)
+anomaly_detection:
+  method: "zscore"  # zscore, isolation_forest, or lof
+  threshold: 2.0
+  contamination: 0.1  # Expected proportion of anomalies

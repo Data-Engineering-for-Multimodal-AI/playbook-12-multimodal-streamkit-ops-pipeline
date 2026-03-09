@@ -1,0 +1,10 @@
+{
+  "2024-01-15": [
+    {
+      "inject_time": "2024-01-15 02:33:19",
+      "inject_timestamp": "1705217199",
+      "inject_pod": "scenario10-malware-deployment-57db4df9f4-p8h7h",
+      "inject_type": "malware deployment"
+    }
+  ]
+}
