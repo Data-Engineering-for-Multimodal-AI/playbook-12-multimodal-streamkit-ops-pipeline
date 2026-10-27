@@ -293,6 +293,11 @@ def load_data(config_path: str, case: Optional[str] = None) -> Dict[str, Any]:
     data_path = config['data_path']
     label = config['label']
     metrics_to_load = config.get('metrics', [])
+    if config['data_source'] == 'lemma-rca':
+        # Each LEMMA-RCA case has its own set of pod metrics; download_data.py lists them
+        source = Path(data_path) / "SOURCE.json"
+        if source.exists():
+            metrics_to_load = json.loads(source.read_text()).get('metrics', metrics_to_load)
 
     print(f"  Case: {config['case']}")
     print(f"  Source: {'LEMMA-RCA (downloaded)' if config['data_source'] == 'lemma-rca' else 'synthetic sample (bundled)'}")

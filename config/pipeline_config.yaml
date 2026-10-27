@@ -37,6 +37,8 @@ thresholds:
 incident:
   lemma-rca:
     kpi_threshold: 0.99        # share of requests served; below 0.99 = error rate above 1%, the alert rule in the case README
+  lemma-rca-relative:
+    kpi_threshold: 0.67        # latency or cost SLI: usual / value; below 0.67 = more than 1.5x the usual value
   sample:
     kpi_threshold: 0.80        # the synthetic sample's KPI is a 0-1 health score
   min_consecutive_windows: 3   # sustained for 3 windows (15 minutes), not a blip

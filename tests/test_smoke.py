@@ -8,12 +8,14 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 import download_data  # noqa: E402
+from pipeline import ingest as ingest_module  # noqa: E402
 from pipeline import plan as plan_module  # noqa: E402
 from pipeline.act import execute_actions  # noqa: E402
 from pipeline.check import check_actions  # noqa: E402
@@ -107,7 +109,8 @@ def test_llm_failure_falls_back_to_rules(sample, monkeypatch):
     assert result['summary']['analyses_generated'] == 8
 
 
-def test_undownloaded_case_says_how_to_get_it():
+def test_undownloaded_case_says_how_to_get_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest_module, 'ROOT', tmp_path)
     with pytest.raises(FileNotFoundError, match="download_data.py --case 20231207"):
         quiet(load_data, CONFIG, "20231207")
 
@@ -130,6 +133,17 @@ def test_lemma_conversion(tmp_path):
         z.writestr('ppt/slides/slide1.xml', slide)
     label = download_data.fault_labels_from_slides(pptx.getvalue(), '20240115')
     assert label['root_cause_pod'] == ROOT_CAUSE and label['failure_timestamp'] == 1705217199
+    # Two cases give Japan time without saying so
+    assert download_data.fault_labels_from_slides(pptx.getvalue(), '20231207', 'Asia/Tokyo')['failure_time_utc'] == '2024-01-13T22:26:39Z'
+
+    # Latency or cost SLI: kpi = usual / value, so doubling the latency halves the KPI
+    rows = pd.DataFrame({'timeStamp': np.arange(0, 600, 10), 'Latency': [30] * 42 + [60] * 18})
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr('case/kpi_case_latency.csv', rows.to_csv(index=False))
+    with zipfile.ZipFile(buf) as z:
+        kpi = download_data.convert_kpi(z, ['case/kpi_case_latency.csv'], 'latency_ms')
+    assert list(kpi['kpi']) == [1.0] * 14 + [0.5] * 6
 
 
 def test_pipeline_end_to_end(sample, tmp_path):

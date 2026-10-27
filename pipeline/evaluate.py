@@ -6,6 +6,7 @@ affecting users. This checks where the root-cause pod landed in the pipeline's p
 any recommended action targeted it, and how the KPI incident lines up with the labelled failure time.
 """
 
+import re
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -36,22 +37,26 @@ def evaluate_run(plan_result: Dict[str, Any], execution_log: Dict[str, Any]) -> 
         result['pod_note'] = 'the root cause is not a pod, so there is no pod ranking to score'
         return result
 
-    rank = pods.index(root) + 1 if root in pods else None
+    # Some labels name a deployment or one of several replicas: the best-ranked matching pod counts
+    pattern = re.compile(labels.get('root_cause_match') or '^' + re.escape(root) + '$')
+    rank = next((i + 1 for i, pod in enumerate(pods) if pattern.search(pod)), None)
+    matched = pods[rank - 1] if rank else None
     actions: List[Dict[str, Any]] = (execution_log.get('executed_actions', []) +
                                      execution_log.get('escalated_actions', []))
     result.update({
         'root_cause_pod': root,
+        'root_cause_matched_pod': matched,
         'root_cause_rank': rank,
         'pods_ranked': len(pods),
         'hit_at_1': rank == 1,
         'hit_at_3': rank is not None and rank <= 3,
         'hit_at_5': rank is not None and rank <= 5,
         'ranked_above_root_cause': pods[:min((rank or len(pods)) - 1, 5)],
-        'root_cause_anomalies': int(ranking.loc[root, 'anomalies']) if rank else 0,
-        'root_cause_in_actions': any(a.get('pod') == root for a in actions),
-        'actions_on_other_pods': sum(a.get('pod') != root for a in actions),
+        'root_cause_anomalies': int(ranking.loc[matched, 'anomalies']) if rank else 0,
+        'root_cause_in_actions': any(a.get('pod') == matched for a in actions) if rank else False,
+        'actions_on_other_pods': sum(a.get('pod') != matched for a in actions),
     })
     if rank and failure is not None:
         result['root_cause_first_anomaly_offset_minutes'] = round(
-            (int(ranking.loc[root, 'first_anomaly']) - failure) / 60, 1)
+            (int(ranking.loc[matched, 'first_anomaly']) - failure) / 60, 1)
     return result

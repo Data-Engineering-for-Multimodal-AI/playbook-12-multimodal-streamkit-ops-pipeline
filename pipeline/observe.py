@@ -264,8 +264,13 @@ def generate_text_dashboard(
     if ev.get('available'):
         if ev.get('root_cause_pod'):
             dashboard.append(f"  Root cause pod:         {ev['root_cause_pod']}")
-            dashboard.append(f"  Its rank:               {ev['root_cause_rank']} of {ev['pods_ranked']} pods "
-                             f"(top 1: {'yes' if ev['hit_at_1'] else 'no'}, top 3: {'yes' if ev['hit_at_3'] else 'no'})")
+            if ev['root_cause_rank'] is None:
+                dashboard.append(f"  Its rank:               not ranked (no anomalies, or not in the data)")
+            else:
+                if ev['root_cause_matched_pod'] != ev['root_cause_pod']:
+                    dashboard.append(f"  Best-ranked match:      {ev['root_cause_matched_pod']}")
+                dashboard.append(f"  Its rank:               {ev['root_cause_rank']} of {ev['pods_ranked']} pods "
+                                 f"(top 1: {'yes' if ev['hit_at_1'] else 'no'}, top 3: {'yes' if ev['hit_at_3'] else 'no'})")
             dashboard.append(f"  Actions on it:          {'yes' if ev['root_cause_in_actions'] else 'no'} "
                              f"({ev['actions_on_other_pods']} actions on other pods)")
         else:

@@ -40,9 +40,29 @@ from pipeline.safe_npy import load_npy, save_npy
 
 REPO_ID = "Lemma-RCA-NEC/Cloud_Computing_Preprocessed"
 REVISION = "03f82a2c4b16afe09e9315def9f5d6990427000a"   # pinned; the dataset is CC BY-NC 4.0
-VALID_CASES = ["20231207", "20231221", "20240115", "20240124", "20240207", "20240215"]
-METRICS = ["cpu_usage", "memory_usage", "rate_received_packets", "rate_transmitted_packets",
-           "rate_storage_iops", "received_bandwidth", "transmit_bandwidth"]
+# What each case's README slides say, where the slides can't be parsed reliably:
+# the time zone of the failure time, the SLI that shows users being hurt, and the root cause.
+CASES = {
+    "20231207": {"tz": "Asia/Tokyo", "sli": "latency_ms",
+                 "root_cause_pod": "productpage-v1 (one of its two replicas; the slides don't say which)",
+                 "root_cause_match": r"^productpage-v1-",
+                 "root_cause": "a latent bug raises the CPU load of one productpage-v1 replica"},
+    "20231221": {"tz": "Asia/Tokyo", "sli": "latency_ms",
+                 "sli_note": "is_error is 1 for every request in this case's KPI file, so latency is used",
+                 "root_cause_pod": "ratings-aggregated (robot-shop's ratings pod, which moved to productpage-v1's node)",
+                 "root_cause_match": r"^ratings-aggregated$",
+                 "root_cause": "robot-shop's ratings pod moved to productpage-v1's node and took its CPU (noisy neighbour)"},
+    "20240115": {"tz": "UTC", "sli": "error_rate"},
+    "20240124": {"tz": "UTC", "sli": "latency_ms",
+                 "root_cause_pod": "i-078923fb30cac1ede (EC2 instance ip-10-1-100-109)",
+                 "root_cause_match": r"^i-078923fb30cac1ede$",
+                 "root_cause": "an infinite loop in one API occupies one of the instance's four CPUs"},
+    "20240207": {"tz": "UTC", "sli": "error_rate"},
+    "20240215": {"tz": "UTC", "sli": "cost_per_hour",
+                 "root_cause_pod": "details-v1", "root_cause_match": r"^details-v1-",
+                 "root_cause": "a cryptojacking coin miner runs in the details-v1 pod"},
+}
+VALID_CASES = list(CASES)
 RESOLUTION = 30   # seconds; the log signals are already at 30 s
 LABEL = "book_info"
 ROOT = Path(__file__).resolve().parent
@@ -77,15 +97,23 @@ def convert_log(raw: bytes) -> dict:
                     'time': np.asarray(entry['time'], dtype=np.int64), 'KPI_Feature': str(entry.get('KPI_Feature'))}}
 
 
-def convert_kpi(z: zipfile.ZipFile, names: list) -> Optional[pd.DataFrame]:
-    """Per-request JMeter results -> requests, error rate and latency per 30 s.
-    Cases store them in one KPI*.csv or in two (error rate, latency).
-    kpi = 1 - error rate (the share of requests served), so higher is better."""
+KPI_COLUMNS = {'is_error': 'error_rate', 'Latency': 'latency_ms', 'Total cost per hour(USD)': 'cost_per_hour'}
+
+
+def convert_kpi(z: zipfile.ZipFile, names: list, sli: str = 'error_rate') -> Optional[pd.DataFrame]:
+    """Per-request JMeter results (or the cost series) -> one row per 30 s.
+    Cases store them in one kpi*.csv or in two (error rate, latency).
+
+    kpi is a health score, higher is better:
+      error-rate SLI:        1 - error rate (the share of requests served)
+      latency or cost SLI:   usual value / value (1.0 normal, 0.5 = twice the usual), where usual is
+                             the median over the whole recording
+    """
     parts = []
     for name in names:
         with z.open(name) as f:
             header = pd.read_csv(f, nrows=0).columns
-        columns = [c for c in ('timeStamp', 'Latency', 'is_error') if c in header]
+        columns = ['timeStamp'] + [c for c in KPI_COLUMNS if c in header]
         with z.open(name) as f:
             df = pd.read_csv(f, usecols=columns)
         bins = (df['timeStamp'].astype(np.int64) // RESOLUTION) * RESOLUTION
@@ -93,22 +121,27 @@ def convert_kpi(z: zipfile.ZipFile, names: list) -> Optional[pd.DataFrame]:
         part = pd.DataFrame(index=grouped.size().index)
         if 'is_error' in columns:
             part['requests'] = grouped.size()
-            part['error_rate'] = grouped['is_error'].mean()
-        if 'Latency' in columns:
-            part['latency_ms'] = grouped['Latency'].mean()
+        for column, out_name in KPI_COLUMNS.items():
+            if column in columns:
+                part[out_name] = grouped[column].mean()
         parts.append(part)
     if not parts:
         return None
     out = pd.concat(parts, axis=1).sort_index()
-    if 'error_rate' not in out:
+    if sli not in out:
         return None
     out.index.name = 'timestamp'
-    out.insert(0, 'kpi', 1 - out['error_rate'])
+    if sli == 'error_rate':
+        out.insert(0, 'kpi', 1 - out['error_rate'])
+    else:
+        usual = out[sli].median()
+        out.insert(0, 'kpi', (usual / out[sli]).clip(upper=1.0))
     return out.reset_index()
 
 
-def fault_labels_from_slides(pptx_bytes: bytes, case: str) -> dict:
-    """Root-cause pod and failure time from the case's README slides (no other label file exists)"""
+def fault_labels_from_slides(pptx_bytes: bytes, case: str, tz: str = 'UTC') -> dict:
+    """Root-cause pod and failure time from the case's README slides (no other label file exists).
+    tz: the time zone of the failure time (two cases give Japan time without saying so)"""
     text = []
     with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as pptx:
         slides = sorted((n for n in pptx.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)),
@@ -122,10 +155,25 @@ def fault_labels_from_slides(pptx_bytes: bytes, case: str) -> dict:
     label = {'case': case, 'source': 'README slides in the case metrics zip',
              'root_cause_pod': pod.group(1) if pod else None,
              'root_cause': cause.group(1).strip() if cause else None,
-             'failure_time_utc': failure.group(1).replace(' ', 'T') + 'Z' if failure else None}
+             'failure_time_utc': None}
     if failure:
-        stamp = failure.group(1).replace(' ', 'T')
-        label['failure_timestamp'] = int(pd.Timestamp(stamp, tz='UTC').timestamp())
+        stamp = pd.Timestamp(failure.group(1).replace(' ', 'T'), tz=tz).tz_convert('UTC')
+        label['failure_time_utc'] = stamp.strftime('%Y-%m-%dT%H:%M:%SZ')
+        label['failure_timestamp'] = int(stamp.timestamp())
+    return label
+
+
+def case_labels(pptx_bytes: Optional[bytes], case: str) -> dict:
+    """The slide label, completed from CASES; kpi_rule says how the pipeline reads the KPI"""
+    known = CASES[case]
+    label = fault_labels_from_slides(pptx_bytes, case, known['tz']) if pptx_bytes else {'case': case}
+    for key in ('root_cause_pod', 'root_cause', 'root_cause_match', 'sli_note'):
+        if key in known:
+            label[key] = known[key]
+    if label.get('root_cause_pod') and 'root_cause_match' not in label:
+        label['root_cause_match'] = '^' + re.escape(label['root_cause_pod']) + '$'
+    label['sli'] = known['sli']
+    label['kpi_rule'] = 'error_rate' if known['sli'] == 'error_rate' else 'relative'
     return label
 
 
@@ -177,26 +225,29 @@ def download_and_extract(
     with zipfile.ZipFile(metrics_zip) as z:
         names = z.namelist()
         print("\nConverting metrics (30-second means)...")
-        for metric in METRICS:
-            # The metrics are stored once per KPI folder (latency/, error_rate/); the pod columns are the same
-            candidates = sorted(n for n in names if n.endswith(f"/pod_level_data_{metric}.npy"))
-            if not candidates:
-                print(f"  ✗ {metric}: not in this case")
-                continue
-            data = convert_metric(z.read(candidates[0]))
+        # Pod metrics differ between cases. Some cases store them once per KPI folder (latency/,
+        # error_rate/); the pod columns are the same, so the first folder is used.
+        found = {}
+        for n in sorted(names):
+            m = re.search(r'/pod_level_data_([a-z0-9_]+)\.npy$', n)
+            if m:
+                found.setdefault(m.group(1), n)
+        for metric, member in found.items():
+            data = convert_metric(z.read(member))
             save_npy(out / f"pod_level_data_{metric}.npy", data)
             seq = data[LABEL]['Sequence']
             print(f"  ✓ {metric}: {seq.shape[0]} time steps × {seq.shape[1]} pods")
 
-        kpi = convert_kpi(z, [n for n in names if re.search(r'/KPI[^/]*\.csv$', n)])
+        sli = CASES[case]['sli']
+        kpi = convert_kpi(z, [n for n in names if re.search(r'/kpi[^/]*\.csv$', n, re.I)], sli)
         if kpi is not None:
             kpi.to_csv(out / "kpi.csv", index=False)
-            print(f"\n  ✓ KPI: {len(kpi)} time steps, overall error rate {kpi['error_rate'].mean():.2%}")
+            print(f"\n  ✓ KPI: {len(kpi)} time steps; the SLI is {sli}")
         else:
-            print("\n  ✗ KPI: no error-rate file in this case")
+            print(f"\n  ✗ KPI: no {sli} in this case")
 
         slides = [n for n in names if n.endswith('.pptx')]
-        labels = fault_labels_from_slides(z.read(slides[0]), case) if slides else {'case': case}
+        labels = case_labels(z.read(slides[0]) if slides else None, case)
     with open(out / "fault_labels.json", 'w') as f:
         json.dump(labels, f, indent=2)
     print(f"  ✓ Fault label: root cause {labels.get('root_cause_pod')}, failure at {labels.get('failure_time_utc')}")
@@ -223,6 +274,7 @@ def download_and_extract(
                    'license': 'CC BY-NC 4.0', 'metrics_zip': metrics_name,
                    'metrics_zip_sha256': info[metrics_name].lfs.sha256,
                    'log_zip': log_name if log_name in info else None,
+                   'metrics': sorted(found),
                    'resolution_seconds': RESOLUTION}, f, indent=2)
 
     size = sum(p.stat().st_size for p in out.iterdir()) / 1e6

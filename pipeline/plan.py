@@ -27,16 +27,17 @@ except ImportError:
 FEATURE_SKIP = ['pod', 'window_start', 'window_end', 'window_id']
 
 
-def find_incident(kpi_windows: pd.DataFrame, config: Dict[str, Any], data_source: str) -> Dict[str, Any]:
+def find_incident(kpi_windows: pd.DataFrame, config: Dict[str, Any], rule: str) -> Dict[str, Any]:
     """When users were hurt, from the KPI alone (no labels).
 
-    A window breaches when its KPI is below the threshold for this data source (LEMMA-RCA: error rate
-    above 1%, the alert rule in the dataset's README). Breaches separated by short gaps are merged;
+    A window breaches when its KPI is below the threshold of the rule (config incident.<rule>):
+    'lemma-rca' for an error-rate SLI (error rate above 1%, the alert rule in the dataset's README),
+    'lemma-rca-relative' for a latency or cost SLI, 'sample' for the synthetic sample. Breaches separated by short gaps are merged;
     runs of at least min_consecutive_windows are incidents. The incident with the largest impact
     (summed shortfall below the threshold) is the one analysed; the others are reported.
     """
     rules = config.get('incident', {})
-    threshold = rules.get(data_source, {}).get('kpi_threshold')
+    threshold = rules.get(rule, {}).get('kpi_threshold')
     run_length = int(rules.get('min_consecutive_windows', 3))
     max_gap = int(rules.get('merge_gap_windows', 2))
     if threshold is None or kpi_windows is None or kpi_windows.empty or 'kpi' not in kpi_windows:
@@ -224,10 +225,13 @@ def generate_rule_based_analysis(
         return None
 
     # Count anomalies by type
-    cpu_anomalies = [a for a in pod_anomalies if 'cpu_usage' in a['feature']]
-    mem_anomalies = [a for a in pod_anomalies if 'memory_usage' in a['feature']]
-    net_anomalies = [a for a in pod_anomalies if 'bandwidth' in a['feature'] or 'packets' in a['feature']]
-    io_anomalies = [a for a in pod_anomalies if 'iops' in a['feature']]
+    # Metric names differ between LEMMA-RCA cases (cpu_usage, pod_cpu_usage_total, memory_used, ...)
+    def of_kind(*words):
+        return [a for a in pod_anomalies if any(w in a['feature'] for w in words)]
+    cpu_anomalies = of_kind('cpu_usage', 'cpu_utilization')
+    mem_anomalies = of_kind('memory_usage', 'memory_used', 'memory_working_set', 'memory_utilization', 'swap_used')
+    net_anomalies = of_kind('bandwidth', 'packets', 'network_', 'netstat')
+    io_anomalies = of_kind('iops', 'diskio', 'disk_used')
 
     analysis = {
         'pod': pod_name,
@@ -459,7 +463,9 @@ def plan_analysis(
 
     # When did users start being hurt?
     print("\nLooking for the incident in the KPI...")
-    incident = find_incident(kpi_windows, config, data_source)
+    labels = fused_df.attrs.get('fault_labels') or {}
+    rule = 'lemma-rca-relative' if data_source == 'lemma-rca' and labels.get('kpi_rule') == 'relative' else data_source
+    incident = find_incident(kpi_windows, config, rule)
     if incident['detected']:
         print(f"  ✓ {len(incident['incidents'])} period(s) with the KPI below {incident['kpi_threshold']}; analysing the largest:")
         print(f"    {format_time(incident['start'], data_source)} to {format_time(incident['end'], data_source)} "
