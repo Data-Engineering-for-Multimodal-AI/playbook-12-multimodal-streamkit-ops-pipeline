@@ -6,7 +6,7 @@ Implements confidence gating, escalation rules, and rate limiting.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,29 @@ def apply_confidence_gate(
         return 'reject', f"Confidence {confidence:.2f} below threshold {confidence_medium}"
 
 
+def apply_action_policy(
+    recommendation: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """
+    Per-action policy from config action_policies: a minimum confidence, and actions that always
+    need a human.
+
+    Returns:
+        (may_auto_approve, reason)
+    """
+    action = recommendation.get('action', '')
+    policy = config.get('action_policies', {}).get(action)
+    if not policy:
+        return True, ""
+    confidence = recommendation.get('confidence', 0.0)
+    if confidence < policy.get('min_confidence', 0.0):
+        return False, f"Confidence {confidence:.2f} below {action}'s minimum {policy['min_confidence']}"
+    if policy.get('requires_escalation'):
+        return False, f"Policy: {action} always needs human approval"
+    return True, ""
+
+
 def validate_scale_action(
     recommendation: Dict[str, Any],
     config: Dict[str, Any],
@@ -138,7 +161,7 @@ def check_rate_limits(
     max_actions_per_minute = guardrails.get('max_actions_per_minute', 20)
 
     # Count actions in the last minute
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     recent_actions = [
         a for a in actions_taken
         if (now - a.get('timestamp', now)).total_seconds() < 60
@@ -172,7 +195,7 @@ def check_rollback_rate(
     guardrails = config.get('guardrails', {})
     max_rollback_rate = guardrails.get('max_rollback_rate', 5)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     recent_restarts = [
         a for a in actions_taken
         if 'restart' in a.get('action', '') and
@@ -241,7 +264,7 @@ def check_actions(
                     'action': rec.get('action', ''),
                     'confidence': rec.get('confidence', 0),
                     'reason': filter_reason,
-                    'timestamp': datetime.utcnow(),
+                    'timestamp': datetime.now(timezone.utc),
                 })
                 print(f"      Rec {rec_idx + 1}: ✗ {filter_reason}")
                 continue
@@ -258,22 +281,38 @@ def check_actions(
                         'action': rec.get('action', ''),
                         'confidence': rec.get('confidence', 0),
                         'reason': scale_reason,
-                        'timestamp': datetime.utcnow(),
+                        'timestamp': datetime.now(timezone.utc),
                     })
                     print(f"      Rec {rec_idx + 1}: ✗ {scale_reason}")
                     continue
 
-                # Check rate limits
+                # Per-action policy, then rate limits over what this run already approved
+                may_approve, policy_reason = apply_action_policy(rec, config)
+                if not may_approve:
+                    escalated_actions.append({
+                        'pod': pod,
+                        'action': rec.get('action', ''),
+                        'confidence': rec.get('confidence', 0),
+                        'reason': policy_reason,
+                        'timestamp': datetime.now(timezone.utc),
+                    })
+                    print(f"      Rec {rec_idx + 1}: ⚠ Escalated: {policy_reason}")
+                    continue
+
                 is_allowed_rate, rate_reason = check_rate_limits(
-                    actions_taken, rec, config
+                    actions_taken + approved_actions, rec, config
                 )
+                if is_allowed_rate:
+                    is_allowed_rate, rate_reason = check_rollback_rate(
+                        actions_taken + approved_actions, rec.get('action', ''), config
+                    )
                 if not is_allowed_rate:
                     escalated_actions.append({
                         'pod': pod,
                         'action': rec.get('action', ''),
                         'confidence': rec.get('confidence', 0),
                         'reason': rate_reason,
-                        'timestamp': datetime.utcnow(),
+                        'timestamp': datetime.now(timezone.utc),
                     })
                     print(f"      Rec {rec_idx + 1}: ⚠ Escalated: {rate_reason}")
                     continue
@@ -284,7 +323,7 @@ def check_actions(
                     'confidence': rec.get('confidence', 0),
                     'severity': rec.get('severity', 'medium'),
                     'reason': rec.get('reason', ''),
-                    'timestamp': datetime.utcnow(),
+                    'timestamp': datetime.now(timezone.utc),
                 })
                 print(f"      Rec {rec_idx + 1}: ✓ Approved ({rec.get('confidence', 0):.2f} confidence)")
 
@@ -294,7 +333,7 @@ def check_actions(
                     'action': rec.get('action', ''),
                     'confidence': rec.get('confidence', 0),
                     'reason': gate_reason or 'Confidence gating escalation',
-                    'timestamp': datetime.utcnow(),
+                    'timestamp': datetime.now(timezone.utc),
                 })
                 print(f"      Rec {rec_idx + 1}: ⚠ Escalated: {gate_reason}")
 
@@ -304,7 +343,7 @@ def check_actions(
                     'action': rec.get('action', ''),
                     'confidence': rec.get('confidence', 0),
                     'reason': gate_reason or 'Confidence too low',
-                    'timestamp': datetime.utcnow(),
+                    'timestamp': datetime.now(timezone.utc),
                 })
                 print(f"      Rec {rec_idx + 1}: ✗ Rejected: {gate_reason}")
 
@@ -324,16 +363,17 @@ def check_actions(
     if escalated_actions:
         print(f"\nEscalated:")
         for action in escalated_actions[:5]:  # Show first 5
-            print(f"  - {action['pod']}: {action['action']}")
+            print(f"  - {action['pod']}: {action['action']} ({action['reason']})")
+        if len(escalated_actions) > 5:
+            print(f"  ... and {len(escalated_actions) - 5} more")
 
     return approved_actions, escalated_actions, rejected_actions
 
 
 if __name__ == "__main__":
-    import logging
-    from ingest import load_data
-    from fuse import fuse_modalities
-    from plan import plan_analysis
+    from pipeline.ingest import load_data
+    from pipeline.fuse import fuse_modalities
+    from pipeline.plan import plan_analysis
 
     logging.basicConfig(level=logging.INFO)
 
