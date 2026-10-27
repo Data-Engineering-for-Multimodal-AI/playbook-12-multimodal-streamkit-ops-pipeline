@@ -6,29 +6,29 @@ OBSERVABILITY DASHBOARD
 Pipeline Configuration:
   Case ID:    20240115
   Service:    book_info
-  Timestamp:  2026-03-09T17:27:03.416880
+  Timestamp:  2026-10-27T00:05:39.939137+00:00
 
 ──────────────────────────────────────────────────────────────────────
 Processing Summary:
-  Anomalies detected:     386
-  Affected pods:          3
-  Analyses generated:     3
+  Anomalies detected:     446
+  Affected pods:          8
+  Analyses generated:     8
 
 ──────────────────────────────────────────────────────────────────────
 Actions Taken:
-  ✓ Executed:             3
-  ⚠ Escalated:            8
+  ✓ Executed:             4
+  ⚠ Escalated:            24
   ✗ Rejected:             0
-  Pods affected:          1
+  Pods affected:          2
 
   Actions by type:
     - restart                  :   1 actions (avg confidence: 0.87)
     - scale_up                 :   1 actions (avg confidence: 0.89)
-    - trigger_profiling        :   1 actions (avg confidence: 0.85)
+    - trigger_profiling        :   2 actions (avg confidence: 0.85)
 
 ──────────────────────────────────────────────────────────────────────
 Confidence Distribution:
-  Very High (≥0.85):         3 actions
+  Very High (≥0.85):         4 actions
   High (0.75-0.85):          0 actions
   Medium (0.60-0.75):        0 actions
   Low (0.40-0.60):           0 actions
@@ -36,19 +36,38 @@ Confidence Distribution:
 
 ──────────────────────────────────────────────────────────────────────
 Root Causes Identified:
-  - Unknown                                 :   3 occurrences
+  - Unknown                                 :   8 occurrences
 
 ──────────────────────────────────────────────────────────────────────
 Top Anomalous Features:
-  - metric_rate_storage_iops_max                      :   10 times
-  - metric_rate_transmitted_packets_p95               :    9 times
-  - metric_memory_usage_mean                          :    8 times
-  - metric_rate_storage_iops_std                      :    8 times
-  - log_golden_std                                    :    8 times
-  - metric_rate_received_packets_max                  :    8 times
-  - log_frequency_std                                 :    8 times
-  - metric_rate_transmitted_packets_mean              :    7 times
-  - metric_rate_received_packets_p50                  :    7 times
-  - metric_transmit_bandwidth_p99                     :    7 times
+  - metric_rate_storage_iops_max                      :   12 times
+  - metric_rate_received_packets_p50                  :   11 times
+  - log_frequency_min                                 :   11 times
+  - metric_memory_usage_mean                          :    9 times
+  - metric_rate_storage_iops_std                      :    9 times
+  - metric_rate_storage_iops_p99                      :    9 times
+  - metric_memory_usage_std                           :    9 times
+  - log_golden_mean                                   :    9 times
+  - metric_memory_usage_p50                           :    9 times
+  - metric_rate_transmitted_packets_p50               :    9 times
+
+──────────────────────────────────────────────────────────────────────
+Most Anomalous Pods:
+  - scenario10-malware-deployment-57db4df9f4-p8h7h    :    315 anomalies
+  - db-service-ghi789                                 :     26 anomalies
+  - frontend-v1-abc123                                :     22 anomalies
+  - gateway-stu901                                    :     19 anomalies
+  - worker-pqr678                                     :     18 anomalies
+
+──────────────────────────────────────────────────────────────────────
+Incident (from the KPI):
+  step 3600 to step 4800 (5 windows, KPI 0.598; 1 period(s) below 0.8)
+
+──────────────────────────────────────────────────────────────────────
+Evaluation Against the Fault Label:
+  Root cause pod:         scenario10-malware-deployment-57db4df9f4-p8h7h
+  Its rank:               1 of 8 pods (top 1: yes, top 3: yes)
+  Actions on it:          yes (24 actions on other pods)
+  Time:                   not scored (the sample has no clock: its label time cannot be compared with the data)
 
 ======================================================================

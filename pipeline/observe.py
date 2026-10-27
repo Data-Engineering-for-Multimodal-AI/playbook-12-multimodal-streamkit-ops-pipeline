@@ -7,9 +7,12 @@ Generates JSON reports and human-readable summaries.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from pipeline.evaluate import evaluate_run
+from pipeline.plan import format_time
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +114,11 @@ def generate_json_report(
 
     # Build report
     report = {
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': datetime.now(timezone.utc).isoformat(),
         'pipeline_config': {
             'case': config.get('case', 'unknown'),
             'service': config.get('label', 'unknown'),
-            'data_path': config.get('data_path', 'unknown'),
+            'data_source': config.get('data_source', 'sample'),
         },
         'processing_summary': {
             'total_anomalies_detected': plan_result['summary'].get('total_anomalies', 0),
@@ -134,24 +137,26 @@ def generate_json_report(
         'top_anomalies': [],
     }
 
-    # Extract top anomalies
-    anomalies_by_frequency = {}
-    for anomaly in plan_result.get('anomalies', []):
-        feature = anomaly.get('feature', 'unknown')
-        if feature not in anomalies_by_frequency:
-            anomalies_by_frequency[feature] = 0
-        anomalies_by_frequency[feature] += 1
+    # Most frequent anomalous features
+    anomalies = plan_result.get('anomalies')
+    if anomalies is not None and len(anomalies):
+        for feature, count in anomalies['feature'].value_counts().head(10).items():
+            report['top_anomalies'].append({'feature': feature, 'occurrences': int(count)})
 
-    # Sort and take top 10
-    for feature, count in sorted(
-        anomalies_by_frequency.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:10]:
-        report['top_anomalies'].append({
-            'feature': feature,
-            'occurrences': count,
-        })
+    # Most anomalous pods
+    ranking = plan_result.get('pod_ranking')
+    if ranking is not None:
+        report['top_pods'] = [{'pod': pod, 'anomalies': int(row['anomalies'])}
+                              for pod, row in ranking.head(10).iterrows()]
+
+    # When users were hurt, and how the run scores against the fault label
+    incident = plan_result.get('incident', {})
+    source = plan_result.get('data_source', 'sample')
+    report['incident'] = {k: v for k, v in incident.items() if k not in ('breached_windows',)}
+    if incident.get('detected'):
+        report['incident']['start_readable'] = format_time(incident['start'], source)
+        report['incident']['end_readable'] = format_time(incident['end'], source)
+    report['evaluation'] = evaluate_run(plan_result, execution_log)
 
     return report
 
@@ -235,6 +240,46 @@ def generate_text_dashboard(
             count = anomaly['occurrences']
             dashboard.append(f"  - {feature:50s}: {count:4d} times")
 
+    # Top pods
+    if report.get('top_pods'):
+        dashboard.append(f"\n{'─'*70}")
+        dashboard.append(f"Most Anomalous Pods:")
+        for entry in report['top_pods'][:5]:
+            dashboard.append(f"  - {entry['pod']:50s}: {entry['anomalies']:6d} anomalies")
+
+    # Incident and evaluation against the fault label
+    incident = report.get('incident', {})
+    dashboard.append(f"\n{'─'*70}")
+    dashboard.append(f"Incident (from the KPI):")
+    if incident.get('detected'):
+        dashboard.append(f"  {incident['start_readable']} to {incident['end_readable']} "
+                         f"({incident['windows']} windows, KPI {incident['kpi_mean']:.3f}; "
+                         f"{len(incident['incidents'])} period(s) below {incident['kpi_threshold']})")
+    else:
+        dashboard.append(f"  none found ({incident.get('reason', 'no KPI')})")
+
+    ev = report.get('evaluation', {})
+    dashboard.append(f"\n{'─'*70}")
+    dashboard.append(f"Evaluation Against the Fault Label:")
+    if ev.get('available'):
+        if ev.get('root_cause_pod'):
+            dashboard.append(f"  Root cause pod:         {ev['root_cause_pod']}")
+            dashboard.append(f"  Its rank:               {ev['root_cause_rank']} of {ev['pods_ranked']} pods "
+                             f"(top 1: {'yes' if ev['hit_at_1'] else 'no'}, top 3: {'yes' if ev['hit_at_3'] else 'no'})")
+            dashboard.append(f"  Actions on it:          {'yes' if ev['root_cause_in_actions'] else 'no'} "
+                             f"({ev['actions_on_other_pods']} actions on other pods)")
+        else:
+            dashboard.append(f"  Root cause:             {ev.get('root_cause')} (not a pod: no ranking to score)")
+        if 'kpi_incident_offset_minutes' in ev:
+            dashboard.append(f"  Labelled failure:       {ev['labelled_failure_utc']}")
+            dashboard.append(f"  KPI incident start:     {ev['kpi_incident_offset_minutes']:+.1f} min from the label")
+        if 'root_cause_first_anomaly_offset_minutes' in ev:
+            dashboard.append(f"  First anomaly on it:    {ev['root_cause_first_anomaly_offset_minutes']:+.1f} min from the label")
+        if ev.get('time_note'):
+            dashboard.append(f"  Time:                   not scored ({ev['time_note']})")
+    else:
+        dashboard.append(f"  {ev.get('reason', 'not available')}")
+
     dashboard.append(f"\n{'='*70}\n")
 
     return "\n".join(dashboard)
@@ -264,7 +309,9 @@ def generate_report(
     print("STAGE 6: OBSERVE")
     print("="*70)
 
-    # Create output directory
+    # Create output directory (one per case and data source, so runs don't overwrite each other)
+    if output_dir == "output/" and config.get('data_source') == 'lemma-rca':
+        output_dir = f"output/lemma-rca-{config.get('case')}/"
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -318,12 +365,11 @@ def generate_report(
 
 
 if __name__ == "__main__":
-    import logging
-    from ingest import load_data
-    from fuse import fuse_modalities
-    from plan import plan_analysis
-    from check import check_actions
-    from act import execute_actions
+    from pipeline.ingest import load_data
+    from pipeline.fuse import fuse_modalities
+    from pipeline.plan import plan_analysis
+    from pipeline.check import check_actions
+    from pipeline.act import execute_actions
 
     logging.basicConfig(level=logging.INFO)
 
