@@ -30,11 +30,21 @@ thresholds:
   # Number of standard deviations above baseline to flag anomaly
   std_multiplier: 2.0
 
-  # Baseline window: use first N% of data to compute baseline statistics
+  # Baseline when the KPI shows no incident: the first N% of the time span (per pod)
   baseline_window_percent: 70
 
-  # Analysis window: analyze remaining N% of data for anomalies
-  analysis_window_percent: 30
+# Incident detection from the KPI (higher is better). The baseline is everything before the incident.
+incident:
+  lemma-rca:
+    kpi_threshold: 0.99        # share of requests served; below 0.99 = error rate above 1%, the alert rule in the case README
+  sample:
+    kpi_threshold: 0.80        # the synthetic sample's KPI is a 0-1 health score
+  min_consecutive_windows: 3   # sustained for 3 windows (15 minutes), not a blip
+  merge_gap_windows: 2         # breaches up to 2 windows apart belong to the same incident
+
+# How many of the most anomalous pods get an analysis and recommendations
+planning:
+  max_pods_to_analyze: 10
 
 # Confidence gating and escalation
 guardrails:
@@ -123,7 +133,7 @@ output:
 
 # Feature computation parameters
 feature_engineering:
-  # Time window size for computing statistics (seconds)
+  # Time window size for computing statistics (seconds; the synthetic sample counts one step as one second)
   window_size: 300
 
   # Aggregation methods for fused features

@@ -24,103 +24,132 @@ except ImportError:
     HAS_LLM = False
 
 
-def compute_baselines(
-    fused_df: pd.DataFrame,
-    baseline_window_percent: float = 70,
-) -> Dict[str, Dict[str, float]]:
+FEATURE_SKIP = ['pod', 'window_start', 'window_end', 'window_id']
+
+
+def find_incident(kpi_windows: pd.DataFrame, config: Dict[str, Any], data_source: str) -> Dict[str, Any]:
+    """When users were hurt, from the KPI alone (no labels).
+
+    A window breaches when its KPI is below the threshold for this data source (LEMMA-RCA: error rate
+    above 1%, the alert rule in the dataset's README). Breaches separated by short gaps are merged;
+    runs of at least min_consecutive_windows are incidents. The incident with the largest impact
+    (summed shortfall below the threshold) is the one analysed; the others are reported.
     """
-    Compute baseline statistics from first N% of data.
+    rules = config.get('incident', {})
+    threshold = rules.get(data_source, {}).get('kpi_threshold')
+    run_length = int(rules.get('min_consecutive_windows', 3))
+    max_gap = int(rules.get('merge_gap_windows', 2))
+    if threshold is None or kpi_windows is None or kpi_windows.empty or 'kpi' not in kpi_windows:
+        return {'detected': False, 'reason': 'no KPI or no threshold for this data source'}
+    kpi = kpi_windows['kpi']
+    starts = kpi.index.to_numpy()
+    breached = np.flatnonzero((kpi < threshold).to_numpy())
+
+    runs = []
+    for i in breached:
+        if runs and i - runs[-1][1] <= max_gap + 1:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i])
+    incidents = []
+    for first, last in runs:
+        if last - first + 1 >= run_length:
+            window = kpi.iloc[first:last + 1]
+            incidents.append({'start': int(starts[first]), 'end': int(starts[last]), 'windows': int(last - first + 1),
+                              'kpi_mean': float(window.mean()),
+                              'impact': float((threshold - window).clip(lower=0).sum())})
+    if not incidents:
+        return {'detected': False, 'kpi_threshold': threshold, 'reason': 'KPI never stayed below the threshold'}
+
+    main = max(incidents, key=lambda i: i['impact'])
+    breach_starts = set(int(t) for t in starts[breached])
+    normal_before = kpi[(kpi.index < main['start']) & ~kpi.index.isin(breach_starts)]
+    return {'detected': True, **main, 'kpi_threshold': threshold, 'min_consecutive_windows': run_length,
+            'kpi_before': float(normal_before.mean()) if len(normal_before) else None,
+            'kpi_after': main['kpi_mean'], 'breached_windows': sorted(breach_starts),
+            'incidents': incidents}
+
+
+def split_windows(
+    fused_df: pd.DataFrame,
+    incident: Dict[str, Any],
+    baseline_window_percent: float = 70,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Baseline = normal windows (KPI fine) before the incident; analysis = the incident's windows.
+    Without an incident: the first N% of the time span, and the rest. Split by time, for every pod alike."""
+    t = fused_df['window_start']
+    if incident.get('detected'):
+        breached = t.isin(incident['breached_windows'])
+        baseline = fused_df[(t < incident['start']) & ~breached]
+        analysis = fused_df[(t >= incident['start']) & (t <= incident['end'])]
+        return baseline, analysis, 'normal windows before the incident'
+    cut = t.min() + (t.max() - t.min()) * baseline_window_percent / 100
+    return fused_df[t < cut], fused_df[t >= cut], f'first {baseline_window_percent}% of the time span'
+
+
+def compute_baselines(
+    baseline_data: pd.DataFrame,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Baseline statistics per pod and feature (each pod is compared with its own normal).
 
     Args:
-        fused_df: Fused DataFrame
-        baseline_window_percent: Percentage of data to use for baseline (0-100)
+        baseline_data: Fused rows of the baseline period
 
     Returns:
-        Dictionary of baseline stats per feature
+        {'mean': DataFrame (pods × features), 'std': DataFrame (pods × features)}
     """
-    cutoff_idx = int(len(fused_df) * baseline_window_percent / 100)
-    baseline_data = fused_df.iloc[:cutoff_idx]
-
-    baselines = {}
-
-    for col in fused_df.columns:
-        if col in ['pod', 'window_start', 'window_end', 'window_id']:
-            continue
-
-        data = baseline_data[col].dropna()
-        if len(data) == 0:
-            continue
-
-        baselines[col] = {
-            'mean': float(np.mean(data)),
-            'std': float(np.std(data)),
-            'min': float(np.min(data)),
-            'max': float(np.max(data)),
-            'p50': float(np.percentile(data, 50)),
-            'p95': float(np.percentile(data, 95)),
-            'p99': float(np.percentile(data, 99)),
-        }
-
-    return baselines
+    features = [c for c in baseline_data.columns if c not in FEATURE_SKIP]
+    grouped = baseline_data.groupby('pod')[features]
+    return {'mean': grouped.mean(), 'std': grouped.std(ddof=0)}
 
 
 def detect_anomalies(
-    fused_df: pd.DataFrame,
-    baselines: Dict[str, Dict[str, float]],
+    analysis_data: pd.DataFrame,
+    baselines: Dict[str, pd.DataFrame],
     std_multiplier: float = 2.0,
-    baseline_window_percent: float = 70,
-) -> List[Dict[str, Any]]:
+) -> pd.DataFrame:
     """
-    Detect anomalies in the analysis window (remaining N% of data).
-
-    Args:
-        fused_df: Fused DataFrame
-        baselines: Baseline statistics
-        std_multiplier: Number of std devs to flag as anomaly
-        baseline_window_percent: Percentage used for baseline
+    Detect anomalies in the analysis period: a value above its pod's baseline mean plus
+    std_multiplier standard deviations.
 
     Returns:
-        List of anomaly records
+        One row per anomalous (window, pod, feature), with value, baseline and deviation in σ
     """
-    cutoff_idx = int(len(fused_df) * baseline_window_percent / 100)
-    analysis_data = fused_df.iloc[cutoff_idx:]
+    features = list(baselines['mean'].columns)
+    index = analysis_data.set_index(['window_id', 'window_start', 'pod'])[features]
+    pods = index.index.get_level_values('pod')
+    mean = baselines['mean'].reindex(pods).to_numpy()
+    std = baselines['std'].reindex(pods).to_numpy()
+    values = index.to_numpy(dtype=float)
+    threshold = mean + std_multiplier * std
+    with np.errstate(invalid='ignore', divide='ignore'):
+        anomalous = np.isfinite(values) & np.isfinite(mean) & (values > threshold)
+        # A feature that never varied in the baseline (std 0): any rise is anomalous; its deviation is
+        # measured against a tiny floor so it sorts above ordinary ones
+        deviation = (values - mean) / np.maximum(std, 1e-9)
+    rows, cols = np.nonzero(anomalous)
+    keys = index.index[rows]
+    return pd.DataFrame({
+        'window_id': keys.get_level_values('window_id'),
+        'window_start': keys.get_level_values('window_start'),
+        'pod': keys.get_level_values('pod'),
+        'feature': np.array(features)[cols],
+        'value': values[rows, cols],
+        'baseline_mean': mean[rows, cols],
+        'baseline_std': std[rows, cols],
+        'threshold': threshold[rows, cols],
+        'deviation': deviation[rows, cols],
+    })
 
-    anomalies = []
 
-    for idx, row in analysis_data.iterrows():
-        pod = row['pod']
-        window_id = row.get('window_id', f"{pod}_{idx}")
-
-        for col in fused_df.columns:
-            if col in ['pod', 'window_start', 'window_end', 'window_id']:
-                continue
-
-            if col not in baselines:
-                continue
-
-            value = row[col]
-            if pd.isna(value):
-                continue
-
-            baseline = baselines[col]
-            mean = baseline['mean']
-            std = baseline['std']
-            threshold = mean + (std_multiplier * std)
-
-            if value > threshold:
-                anomalies.append({
-                    'window_id': window_id,
-                    'pod': pod,
-                    'feature': col,
-                    'value': float(value),
-                    'baseline_mean': mean,
-                    'baseline_std': std,
-                    'threshold': threshold,
-                    'deviation': float((value - mean) / std) if std > 0 else 0,
-                    'idx': idx,
-                })
-
-    return anomalies
+def rank_pods(anomalies: pd.DataFrame) -> pd.DataFrame:
+    """Pods by number of anomalies, then by their largest deviation"""
+    if anomalies.empty:
+        return pd.DataFrame(columns=['anomalies', 'max_deviation', 'first_anomaly'])
+    ranking = anomalies.groupby('pod').agg(anomalies=('feature', 'size'), max_deviation=('deviation', 'max'),
+                                           first_anomaly=('window_start', 'min'))
+    return ranking.sort_values(['anomalies', 'max_deviation'], ascending=False)
 
 
 def group_anomalies_by_pod(
@@ -312,8 +341,10 @@ def generate_llm_analysis(
         )
 
         # Build context for the LLM
+        # The strongest deviations only: a pod can have thousands of anomalous cells
+        strongest = sorted(pod_anomalies, key=lambda a: a['deviation'], reverse=True)[:50]
         anomaly_summary = []
-        for anomaly in pod_anomalies:
+        for anomaly in strongest:
             anomaly_summary.append(
                 f"- {anomaly['feature']}: {anomaly['value']:.2f} "
                 f"(baseline: {anomaly['baseline_mean']:.2f}, "
@@ -324,7 +355,7 @@ def generate_llm_analysis(
 You are an IT operations expert analyzing a root cause analysis scenario using the LEMMA-RCA dataset.
 
 Pod: {pod_name}
-Anomalies detected: {len(pod_anomalies)}
+Anomalies detected: {len(pod_anomalies)} (the {len(strongest)} strongest below)
 
 Details:
 {chr(10).join(anomaly_summary)}
@@ -392,20 +423,25 @@ Respond in JSON format:
 def plan_analysis(
     fused_df: pd.DataFrame,
     config: Dict[str, Any],
+    kpi_windows: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Plan
 
-    Detect anomalies and generate analysis with recommendations.
+    Find when the incident started (KPI), detect anomalies against each pod's own baseline,
+    rank the pods and generate analyses with recommendations for the top ones.
 
     Args:
-        fused_df: Fused DataFrame from stage 2
+        fused_df: Fused DataFrame from stage 2 (its attrs carry the KPI per window)
         config: Pipeline configuration
+        kpi_windows: KPI per window (default: fused_df.attrs['kpi_windows'])
 
     Returns:
         Dictionary with:
-        - anomalies: all detected anomalies
-        - analyses: per-pod analysis with recommendations
+        - anomalies: DataFrame of anomalous (window, pod, feature) cells
+        - analyses: per-pod analysis with recommendations (top pods)
+        - pod_ranking: pods by anomaly count
+        - incident: when the KPI showed users being hurt
         - baselines: baseline statistics
         - summary: aggregated statistics
     """
@@ -416,58 +452,73 @@ def plan_analysis(
     thresholds = config.get('thresholds', {})
     std_multiplier = thresholds.get('std_multiplier', 2.0)
     baseline_window_percent = thresholds.get('baseline_window_percent', 70)
+    max_pods = int(config.get('planning', {}).get('max_pods_to_analyze', 10))
+    if kpi_windows is None:
+        kpi_windows = fused_df.attrs.get('kpi_windows')
+    data_source = fused_df.attrs.get('data_source', config.get('data_source', 'sample'))
 
-    # Compute baselines
-    print(f"\nComputing baselines from first {baseline_window_percent}% of data...")
-    baselines = compute_baselines(fused_df, baseline_window_percent)
-    print(f"  ✓ Baseline stats computed for {len(baselines)} features")
+    # When did users start being hurt?
+    print("\nLooking for the incident in the KPI...")
+    incident = find_incident(kpi_windows, config, data_source)
+    if incident['detected']:
+        print(f"  ✓ {len(incident['incidents'])} period(s) with the KPI below {incident['kpi_threshold']}; analysing the largest:")
+        print(f"    {format_time(incident['start'], data_source)} to {format_time(incident['end'], data_source)} "
+              f"({incident['windows']} windows; KPI {incident['kpi_before']:.3f} before, {incident['kpi_after']:.3f} during)")
+    else:
+        print(f"  ⚠ No incident found ({incident['reason']}); using the first {baseline_window_percent}% of time as baseline")
 
-    # Detect anomalies
-    print(f"\nDetecting anomalies in remaining {100 - baseline_window_percent}% of data...")
-    anomalies = detect_anomalies(
-        fused_df,
-        baselines,
-        std_multiplier=std_multiplier,
-        baseline_window_percent=baseline_window_percent,
-    )
+    baseline_data, analysis_data, how = split_windows(fused_df, incident, baseline_window_percent)
+    windows = fused_df['window_start'].nunique()
+    print(f"\nComputing baselines per pod from {baseline_data['window_start'].nunique()} of {windows} windows ({how})...")
+    baselines = compute_baselines(baseline_data)
+    print(f"  ✓ Baseline stats computed for {baselines['mean'].shape[1]} features × {baselines['mean'].shape[0]} pods")
+
+    print(f"\nDetecting anomalies in {analysis_data['window_start'].nunique()} windows...")
+    anomalies = detect_anomalies(analysis_data, baselines, std_multiplier=std_multiplier)
+    ranking = rank_pods(anomalies)
     print(f"  ✓ {len(anomalies)} anomalies detected")
+    print(f"\n  Affected pods: {len(ranking)}")
+    for pod, row in ranking.head(5).iterrows():
+        print(f"    {int(row['anomalies']):6d}  {pod}")
 
-    # Group by pod
-    anomaly_groups = group_anomalies_by_pod(anomalies)
-    print(f"\n  Affected pods: {len(anomaly_groups)}")
-
-    # Generate analyses
-    print(f"\nGenerating analyses and recommendations...")
+    # Generate analyses for the top pods
+    top = list(ranking.index[:max_pods])
+    print(f"\nGenerating analyses and recommendations (top {len(top)} pods)...")
     analyses = []
     use_llm = HAS_LLM and os.getenv('LLM_API_KEY')
+    anomaly_groups = {pod: anomalies[anomalies['pod'] == pod].to_dict('records') for pod in top}
 
-    for pod_name in sorted(anomaly_groups.keys()):
+    for pod_name in top:
         pod_anomalies = anomaly_groups[pod_name]
 
-        # Try LLM analysis first if available
+        # Try LLM analysis first if available; fall back to the rules if it fails
         analysis = None
         if use_llm:
             print(f"  → {pod_name}: Using LLM for analysis...", end='', flush=True)
             analysis = generate_llm_analysis(pod_name, pod_anomalies, anomaly_groups)
-            if analysis:
-                print(" ✓")
+            print(" ✓" if analysis else " ✗ failed, using rule-based analysis...", end='\n' if analysis else '')
         else:
             print(f"  → {pod_name}: Using rule-based analysis...", end='', flush=True)
+        if analysis is None:
             analysis = generate_rule_based_analysis(pod_name, pod_anomalies)
             if analysis:
                 print(" ✓")
 
         if analysis:
+            analysis['rank'] = len(analyses) + 1
+            analysis['anomalies'] = sorted(pod_anomalies, key=lambda a: a['deviation'], reverse=True)[:20]
             analyses.append(analysis)
 
     # Summary statistics
     summary = {
         'total_anomalies': len(anomalies),
-        'affected_pods': len(anomaly_groups),
+        'affected_pods': len(ranking),
         'analyses_generated': len(analyses),
-        'avg_anomalies_per_pod': len(anomalies) / max(1, len(anomaly_groups)),
-        'baseline_window_percent': baseline_window_percent,
-        'analysis_window_percent': 100 - baseline_window_percent,
+        'avg_anomalies_per_pod': len(anomalies) / max(1, len(ranking)),
+        'baseline_windows': int(baseline_data['window_start'].nunique()),
+        'analysis_windows': int(analysis_data['window_start'].nunique()),
+        'baseline': how,
+        'llm_enabled': bool(use_llm),
     }
 
     print(f"\n{'─'*70}")
@@ -482,17 +533,26 @@ def plan_analysis(
     return {
         'anomalies': anomalies,
         'analyses': analyses,
-        'anomaly_groups': anomaly_groups,
+        'pod_ranking': ranking,
+        'incident': incident,
         'baselines': baselines,
         'summary': summary,
+        'fault_labels': fused_df.attrs.get('fault_labels', {}),
+        'data_source': data_source,
         'config': config,
     }
 
 
+def format_time(t: int, data_source: str) -> str:
+    """Unix time for LEMMA-RCA cases; step number for the clock-less sample"""
+    if data_source == 'lemma-rca':
+        return pd.Timestamp(int(t), unit='s', tz='UTC').strftime('%Y-%m-%d %H:%M UTC')
+    return f"step {int(t)}"
+
+
 if __name__ == "__main__":
-    import logging
-    from ingest import load_data
-    from fuse import fuse_modalities
+    from pipeline.ingest import load_data
+    from pipeline.fuse import fuse_modalities
 
     logging.basicConfig(level=logging.INFO)
 
