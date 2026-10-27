@@ -1,0 +1,3 @@
+# False positive: the CI cache key (dataset revision and case numbers), not a credential
+7120094745bf77a5877d2c7683bcd94196d02a84:.github/workflows/smoke.yml:generic-api-key:26
+.github/workflows/smoke.yml:generic-api-key:26

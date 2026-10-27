@@ -6,7 +6,7 @@ Logs execution with timestamps and before/after states.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 def simulate_action_execution(
     action: Dict[str, Any],
+    rng: Optional[np.random.Generator] = None,
 ) -> Dict[str, Any]:
     """
     Simulate execution of a single action.
@@ -26,35 +27,39 @@ def simulate_action_execution(
     Returns:
         Execution log entry
     """
+    rng = rng or np.random.default_rng(0)
     pod = action['pod']
     action_type = action['action']
     confidence = action['confidence']
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+    duration = int(rng.integers(5, 30))
 
     execution_log = {
         'pod': pod,
         'action': action_type,
         'confidence': confidence,
-        'status': 'executed',
+        'status': 'executed (simulated)',
         'timestamp_start': now,
-        'timestamp_end': now + timedelta(seconds=np.random.randint(5, 30)),
-        'duration_seconds': np.random.randint(5, 30),
+        'timestamp_end': now + timedelta(seconds=duration),
+        'duration_seconds': duration,
     }
 
     # Simulate action-specific behavior
     if action_type == 'scale_up':
+        before = int(rng.integers(2, 5))
         execution_log.update({
-            'before_replicas': np.random.randint(2, 5),
-            'after_replicas': np.random.randint(3, 6),
+            'before_replicas': before,
+            'after_replicas': before + int(rng.integers(1, 4)),
             'change': 'scale_up',
             'details': 'Added replicas to handle load',
         })
 
     elif action_type == 'scale_down':
+        before = int(rng.integers(4, 8))
         execution_log.update({
-            'before_replicas': np.random.randint(4, 8),
-            'after_replicas': np.random.randint(2, 5),
+            'before_replicas': before,
+            'after_replicas': max(1, before - int(rng.integers(1, 3))),
             'change': 'scale_down',
             'details': 'Removed excess replicas',
         })
@@ -80,8 +85,8 @@ def simulate_action_execution(
         execution_log.update({
             'change': 'collect_logs',
             'details': f'Collected logs from {pod}',
-            'log_lines': np.random.randint(100, 1000),
-            'log_size_mb': np.random.uniform(1, 50),
+            'log_lines': int(rng.integers(100, 1000)),
+            'log_size_mb': round(float(rng.uniform(1, 50)), 1),
         })
 
     elif action_type == 'trigger_profiling':
@@ -104,7 +109,7 @@ def simulate_action_execution(
         execution_log.update({
             'change': 'force_rebalance',
             'details': f'Initiated pod rebalancing',
-            'pods_moved': np.random.randint(1, 5),
+            'pods_moved': int(rng.integers(1, 5)),
         })
 
     return execution_log
@@ -114,11 +119,13 @@ def execute_actions(
     approved_actions: List[Dict[str, Any]],
     escalated_actions: Optional[List[Dict[str, Any]]] = None,
     rejected_actions: Optional[List[Dict[str, Any]]] = None,
+    seed: int = 0,
 ) -> Dict[str, Any]:
     """
     Stage 5: Act
 
-    Simulate execution of approved remediation actions.
+    Simulate execution of approved remediation actions. Nothing touches a cluster; durations and
+    replica counts are drawn from a seeded generator, so a run is reproducible.
 
     Args:
         approved_actions: List of approved actions from check stage
@@ -142,8 +149,9 @@ def execute_actions(
         rejected_actions = []
 
     executed_actions = []
+    rng = np.random.default_rng(seed)
 
-    print(f"\nExecuting {len(approved_actions)} approved actions...")
+    print(f"\nExecuting {len(approved_actions)} approved actions (simulated)...")
 
     for action in approved_actions:
         pod = action['pod']
@@ -152,7 +160,7 @@ def execute_actions(
         print(f"  → {pod}: {action_type}...", end='', flush=True)
 
         try:
-            execution_log = simulate_action_execution(action)
+            execution_log = simulate_action_execution(action, rng)
             executed_actions.append(execution_log)
             print(f" ✓ ({execution_log['duration_seconds']}s)")
 
@@ -164,7 +172,7 @@ def execute_actions(
                 'action': action_type,
                 'status': 'failed',
                 'error': str(e),
-                'timestamp': datetime.utcnow(),
+                'timestamp': datetime.now(timezone.utc),
             })
 
     # Execution summary
@@ -173,7 +181,7 @@ def execute_actions(
         'total_escalated': len(escalated_actions),
         'total_rejected': len(rejected_actions),
         'actions_by_type': {},
-        'execution_timestamp': datetime.utcnow(),
+        'execution_timestamp': datetime.now(timezone.utc),
     }
 
     # Count by action type
@@ -210,11 +218,10 @@ def execute_actions(
 
 
 if __name__ == "__main__":
-    import logging
-    from ingest import load_data
-    from fuse import fuse_modalities
-    from plan import plan_analysis
-    from check import check_actions
+    from pipeline.ingest import load_data
+    from pipeline.fuse import fuse_modalities
+    from pipeline.plan import plan_analysis
+    from pipeline.check import check_actions
 
     logging.basicConfig(level=logging.INFO)
 

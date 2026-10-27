@@ -1,20 +1,20 @@
 {
-  "timestamp": "2026-03-09T17:27:03.416880",
+  "timestamp": "2026-10-27T21:53:44.177354+00:00",
   "pipeline_config": {
     "case": "20240115",
     "service": "book_info",
-    "data_path": "data/20240115/"
+    "data_source": "sample"
   },
   "processing_summary": {
-    "total_anomalies_detected": 386,
-    "affected_pods": 3,
-    "analyses_generated": 3
+    "total_anomalies_detected": 446,
+    "affected_pods": 8,
+    "analyses_generated": 8
   },
   "actions_summary": {
-    "total_executed": 3,
-    "total_escalated": 8,
+    "total_executed": 4,
+    "total_escalated": 24,
     "total_rejected": 0,
-    "affected_pods": 1,
+    "affected_pods": 2,
     "by_type": {
       "scale_up": {
         "count": 1,
@@ -27,9 +27,9 @@
         "total_confidence": 0.87
       },
       "trigger_profiling": {
-        "count": 1,
+        "count": 2,
         "avg_confidence": 0.85,
-        "total_confidence": 0.85
+        "total_confidence": 1.7
       }
     }
   },
@@ -38,51 +38,124 @@
     "low": 0,
     "medium": 0,
     "high": 0,
-    "very_high": 3
+    "very_high": 4
   },
   "root_causes": {
-    "Unknown": 3
+    "Unknown": 8
   },
   "top_anomalies": [
     {
       "feature": "metric_rate_storage_iops_max",
-      "occurrences": 10
-    },
-    {
-      "feature": "metric_rate_transmitted_packets_p95",
-      "occurrences": 9
-    },
-    {
-      "feature": "metric_memory_usage_mean",
-      "occurrences": 8
-    },
-    {
-      "feature": "metric_rate_storage_iops_std",
-      "occurrences": 8
-    },
-    {
-      "feature": "log_golden_std",
-      "occurrences": 8
-    },
-    {
-      "feature": "metric_rate_received_packets_max",
-      "occurrences": 8
-    },
-    {
-      "feature": "log_frequency_std",
-      "occurrences": 8
-    },
-    {
-      "feature": "metric_rate_transmitted_packets_mean",
-      "occurrences": 7
+      "occurrences": 12
     },
     {
       "feature": "metric_rate_received_packets_p50",
-      "occurrences": 7
+      "occurrences": 11
     },
     {
-      "feature": "metric_transmit_bandwidth_p99",
-      "occurrences": 7
+      "feature": "log_frequency_min",
+      "occurrences": 11
+    },
+    {
+      "feature": "metric_memory_usage_mean",
+      "occurrences": 9
+    },
+    {
+      "feature": "metric_rate_storage_iops_std",
+      "occurrences": 9
+    },
+    {
+      "feature": "metric_rate_storage_iops_p99",
+      "occurrences": 9
+    },
+    {
+      "feature": "metric_memory_usage_std",
+      "occurrences": 9
+    },
+    {
+      "feature": "log_golden_mean",
+      "occurrences": 9
+    },
+    {
+      "feature": "metric_memory_usage_p50",
+      "occurrences": 9
+    },
+    {
+      "feature": "metric_rate_transmitted_packets_p50",
+      "occurrences": 9
     }
-  ]
+  ],
+  "top_pods": [
+    {
+      "pod": "scenario10-malware-deployment-57db4df9f4-p8h7h",
+      "anomalies": 315
+    },
+    {
+      "pod": "db-service-ghi789",
+      "anomalies": 26
+    },
+    {
+      "pod": "frontend-v1-abc123",
+      "anomalies": 22
+    },
+    {
+      "pod": "gateway-stu901",
+      "anomalies": 19
+    },
+    {
+      "pod": "worker-pqr678",
+      "anomalies": 18
+    },
+    {
+      "pod": "cache-layer-jkl012",
+      "anomalies": 18
+    },
+    {
+      "pod": "queue-service-mno345",
+      "anomalies": 14
+    },
+    {
+      "pod": "api-server-def456",
+      "anomalies": 14
+    }
+  ],
+  "incident": {
+    "detected": true,
+    "start": 3600,
+    "end": 4800,
+    "windows": 5,
+    "kpi_mean": 0.5981203665015901,
+    "impact": 1.00939816749205,
+    "kpi_threshold": 0.8,
+    "min_consecutive_windows": 3,
+    "kpi_before": 0.9503252024903223,
+    "kpi_after": 0.5981203665015901,
+    "incidents": [
+      {
+        "start": 3600,
+        "end": 4800,
+        "windows": 5,
+        "kpi_mean": 0.5981203665015901,
+        "impact": 1.00939816749205
+      }
+    ],
+    "start_readable": "step 3600",
+    "end_readable": "step 4800"
+  },
+  "evaluation": {
+    "available": true,
+    "root_cause": null,
+    "time_note": "the sample has no clock: its label time cannot be compared with the data",
+    "root_cause_pod": "scenario10-malware-deployment-57db4df9f4-p8h7h",
+    "root_cause_matched_pod": "scenario10-malware-deployment-57db4df9f4-p8h7h",
+    "root_cause_rank": 1,
+    "pods_ranked": 8,
+    "hit_at_1": true,
+    "hit_at_3": true,
+    "hit_at_5": true,
+    "ranked_above_root_cause": [],
+    "root_cause_anomalies": 315,
+    "root_cause_in_actions": true,
+    "actions_on_other_pods": 24
+  }
 }

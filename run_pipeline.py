@@ -12,7 +12,7 @@ Runs all six stages sequentially:
 
 Usage:
     python run_pipeline.py                  # Run with default config
-    python run_pipeline.py --case 20240207  # Specify case
+    python run_pipeline.py --case 20240115  # A LEMMA-RCA case downloaded with download_data.py
     python run_pipeline.py --config custom_config.yaml
 """
 
@@ -20,7 +20,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -46,7 +46,7 @@ def print_header():
     print("STREAMKIT OPS PLAYBOOK")
     print("Six-Stage Multimodal AI Pipeline for RCA")
     print("="*70)
-    print(f"Started: {datetime.utcnow().isoformat()}\n")
+    print(f"Started: {datetime.now(timezone.utc).isoformat()}\n")
 
 
 def print_footer(total_time: float, config_case: str):
@@ -56,7 +56,7 @@ def print_footer(total_time: float, config_case: str):
     print("="*70)
     print(f"Case:           {config_case}")
     print(f"Total time:     {total_time:.1f} seconds")
-    print(f"Finished:       {datetime.utcnow().isoformat()}")
+    print(f"Finished:       {datetime.now(timezone.utc).isoformat()}")
     print("="*70 + "\n")
 
 
@@ -83,9 +83,7 @@ def run_pipeline(
         print("─" * 70)
         stage1_start = time.time()
 
-        data_dict = load_data(config_path)
-        if case:
-            data_dict['config']['case'] = case
+        data_dict = load_data(config_path, case)
 
         stage1_time = time.time() - stage1_start
         print(f"Stage 1 completed in {stage1_time:.1f}s\n")
@@ -168,8 +166,8 @@ def run_pipeline(
         return 0
 
     except FileNotFoundError as e:
-        print(f"\n✗ Error: Configuration file not found: {e}")
-        logger.error(f"Configuration file not found: {e}")
+        print(f"\n✗ Error: {e}")
+        logger.error(str(e))
         return 1
 
     except KeyError as e:
@@ -191,7 +189,7 @@ def main():
         epilog="""
 Examples:
   python run_pipeline.py                    # Run with default config
-  python run_pipeline.py --case 20240207    # Specify case ID
+  python run_pipeline.py --case 20240115    # LEMMA-RCA case (python download_data.py --case 20240115)
   python run_pipeline.py --config my_config.yaml
         """,
     )
@@ -207,7 +205,7 @@ Examples:
         "--case",
         type=str,
         default=None,
-        help="Case ID to analyze (overrides config file)",
+        help="LEMMA-RCA case to analyze (download it first with download_data.py); default: the bundled synthetic sample",
     )
 
     parser.add_argument(

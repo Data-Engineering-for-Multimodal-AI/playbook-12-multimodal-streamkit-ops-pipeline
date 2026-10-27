@@ -1,0 +1,56 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Smoke test (synthetic sample)
+        run: make smoke
+      - name: Cache the LEMMA-RCA downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface/hub
+          key: lemma-rca-03f82a2c-20240115-20240207
+      - name: Printed commands (pip install -r requirements.txt, download_data.py, run_pipeline.py)
+        run: |
+          uv venv --seed --python ${{ matrix.python-version }} /tmp/pipenv
+          /tmp/pipenv/bin/python -m pip install -q -r requirements.txt
+          /tmp/pipenv/bin/python run_pipeline.py
+          /tmp/pipenv/bin/python download_data.py
+          /tmp/pipenv/bin/python run_pipeline.py --case 20240115
+          /tmp/pipenv/bin/python download_data.py --case 20240207
+          /tmp/pipenv/bin/python run_pipeline.py --case 20240207
+          /tmp/pipenv/bin/python download_data.py --list
+
+  other-cases:
+    # The book's "Extending the Playbook": the other four Cloud Computing cases, without code changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Cache the LEMMA-RCA downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface/hub
+          key: lemma-rca-other-cases
+      - name: Download and run cases 20231207, 20231221, 20240124, 20240215
+        run: |
+          uv sync --python 3.12
+          for case in 20231207 20231221 20240124 20240215; do
+            uv run python download_data.py --case $case
+            uv run python run_pipeline.py --case $case | tee /tmp/run.log
+            sed -n '/Evaluation Against the Fault Label/,/^====/p' /tmp/run.log
+          done

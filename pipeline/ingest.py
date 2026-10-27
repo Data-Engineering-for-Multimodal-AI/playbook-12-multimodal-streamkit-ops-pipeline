@@ -1,8 +1,12 @@
 """
 Stage 1: Ingest
 
-Loads metrics, logs, and KPI data from the LEMMA-RCA dataset.
-Validates data integrity and returns structured DataFrames for downstream processing.
+Loads metrics, logs, KPI and fault labels from a case folder: the bundled synthetic sample
+(data/20240115/) or a LEMMA-RCA case converted by download_data.py (data/lemma-rca/{case}/).
+Validates data integrity and returns time-indexed DataFrames for downstream processing.
+
+Every series is indexed by time in seconds. LEMMA-RCA cases carry unix timestamps; the synthetic
+sample has none, so its steps are numbered 0, 1, 2, ... and treated as seconds.
 """
 
 import json
@@ -14,7 +18,11 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from pipeline.safe_npy import load_npy
+
 logger = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -32,6 +40,41 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
+def resolve_data_path(config: Dict[str, Any], case: Optional[str] = None) -> Dict[str, Any]:
+    """Pick the folder: without a case, the bundled sample; with a case, the downloaded LEMMA-RCA case.
+
+    Sets config['case'], config['data_path'] and config['data_source'] ('lemma-rca' or 'sample').
+    """
+    sample = dict(data_path=str(ROOT / config['data_path']), data_source='sample')
+    if case is None:
+        config.update(**sample)
+        if (ROOT / "data" / "lemma-rca" / str(config['case']) / "fault_labels.json").exists():
+            # The book runs `python run_pipeline.py` right after the download
+            print(f"  Using the bundled sample. For the downloaded LEMMA-RCA case: "
+                  f"python run_pipeline.py --case {config['case']}")
+        return config
+    case = str(case)
+    downloaded = ROOT / "data" / "lemma-rca" / case
+    if (downloaded / "fault_labels.json").exists():
+        config.update(case=case, data_path=str(downloaded), data_source='lemma-rca')
+    elif case == str(config['case']):
+        print(f"  Case {case} isn't downloaded (python download_data.py --case {case}); using the bundled sample")
+        config.update(**sample)
+    else:
+        raise FileNotFoundError(f"No data for case {case}. Run: python download_data.py --case {case}")
+    return config
+
+
+def _entry(npy_file: Path, label: str) -> Optional[Dict[str, Any]]:
+    data = load_npy(npy_file)
+    if label in data:
+        return data[label]
+    if 'Sequence' in data:
+        return data
+    logger.warning(f"Label '{label}' not found in {npy_file.name}")
+    return None
+
+
 def load_metric_data(
     data_path: str,
     metric_name: str,
@@ -46,7 +89,7 @@ def load_metric_data(
         label: Label/service name (e.g., 'book_info')
 
     Returns:
-        Dictionary with keys: Pod_Name, Sequence, KPI_Feature
+        Dictionary with keys: Pod_Name, Sequence, KPI_Feature (and time for LEMMA-RCA cases)
         None if file not found
     """
     npy_file = Path(data_path) / f"pod_level_data_{metric_name}.npy"
@@ -56,14 +99,7 @@ def load_metric_data(
         return None
 
     try:
-        data_dict = np.load(npy_file, allow_pickle=True).item()
-
-        if label not in data_dict:
-            logger.warning(f"Label '{label}' not found in {metric_name}.npy")
-            return None
-
-        return data_dict[label]
-
+        return _entry(npy_file, label)
     except Exception as e:
         logger.error(f"Error loading {npy_file}: {e}")
         return None
@@ -83,7 +119,7 @@ def load_log_data(
         label: Label/service name
 
     Returns:
-        Dictionary with keys: Node_Name, Sequence, KPI_Feature
+        Dictionary with keys: Node_Name, Sequence, KPI_Feature (and time)
         None if file not found
     """
     npy_file = Path(data_path) / filename
@@ -93,14 +129,7 @@ def load_log_data(
         return None
 
     try:
-        data_dict = np.load(npy_file, allow_pickle=True).item()
-
-        if label not in data_dict:
-            logger.warning(f"Label '{label}' not found in {filename}")
-            return None
-
-        return data_dict[label]
-
+        return _entry(npy_file, label)
     except Exception as e:
         logger.error(f"Error loading {npy_file}: {e}")
         return None
@@ -114,7 +143,7 @@ def load_kpi_data(data_path: str) -> Optional[pd.DataFrame]:
         data_path: Path to data directory
 
     Returns:
-        DataFrame with KPI data
+        DataFrame indexed by time with at least a 'kpi' column (higher is better)
         None if file not found
     """
     kpi_file = Path(data_path) / "kpi.csv"
@@ -124,12 +153,33 @@ def load_kpi_data(data_path: str) -> Optional[pd.DataFrame]:
         return None
 
     try:
-        kpi_df = pd.read_csv(kpi_file)
-        return kpi_df
+        return pd.read_csv(kpi_file).set_index('timestamp')
 
     except Exception as e:
         logger.error(f"Error loading {kpi_file}: {e}")
         return None
+
+
+def load_fault_labels(data_path: str) -> Dict[str, Any]:
+    """Root-cause pod and failure time, in one shape for both data sources.
+
+    The synthetic sample's label names a real-world time, but the sample has no clock, so only its
+    root-cause pod can be scored.
+    """
+    label_file = Path(data_path) / "fault_labels.json"
+    if not label_file.exists():
+        return {}
+    with open(label_file) as f:
+        labels = json.load(f)
+    if 'root_cause_pod' in labels:
+        return labels
+    injections = [i for day in labels.values() for i in day]
+    if not injections:
+        return {}
+    first = injections[0]
+    return {'root_cause_pod': first.get('inject_pod'), 'fault_type': first.get('inject_type'),
+            'failure_timestamp': None,
+            'note': 'the sample has no clock: its label time cannot be compared with the data'}
 
 
 def validate_metric_data(
@@ -160,15 +210,18 @@ def validate_metric_data(
     if 'Sequence' not in metric_data:
         return False, f"{metric_name}: missing 'Sequence' key"
 
-    if 'KPI_Feature' not in metric_data:
-        return False, f"{metric_name}: missing 'KPI_Feature' key"
-
     sequence = metric_data['Sequence']
     if not isinstance(sequence, np.ndarray):
         return False, f"{metric_name}: Sequence is not a numpy array"
 
     if sequence.ndim != 2:
         return False, f"{metric_name}: Sequence should be 2D (timestamps × pods)"
+
+    if sequence.shape[1] != len(metric_data['Pod_Name']):
+        return False, f"{metric_name}: {sequence.shape[1]} columns for {len(metric_data['Pod_Name'])} pods"
+
+    if 'time' in metric_data and len(metric_data['time']) != sequence.shape[0]:
+        return False, f"{metric_name}: {len(metric_data['time'])} timestamps for {sequence.shape[0]} rows"
 
     # Check for NaN/inf
     if np.isnan(sequence).any():
@@ -179,59 +232,58 @@ def validate_metric_data(
     return True, ""
 
 
-def validate_consistency(metrics_data: Dict[str, Dict[str, Any]]) -> tuple[bool, str]:
-    """
-    Validate consistency across all metrics (pod names, sequence lengths).
+def to_frame(entry: Dict[str, Any]) -> pd.DataFrame:
+    """Time-indexed DataFrame (rows: seconds, columns: pods)"""
+    sequence = np.asarray(entry['Sequence'], dtype=np.float64)
+    time = np.asarray(entry['time'], dtype=np.int64) if 'time' in entry else np.arange(sequence.shape[0])
+    return pd.DataFrame(sequence, index=pd.Index(time, name='time'), columns=list(entry['Pod_Name']))
 
-    Args:
-        metrics_data: Dictionary of all metric data
+
+def validate_consistency(metrics: Dict[str, pd.DataFrame]) -> tuple[bool, str]:
+    """
+    Validate consistency across all metrics (pod names, time span).
+
+    Real clusters don't report every metric for every pod (LEMMA-RCA has storage IOPS for 6 of
+    257 pods), so differences are reported, not treated as errors.
 
     Returns:
-        (is_valid, error_message)
+        (all_identical, description)
     """
-    if not metrics_data:
+    if not metrics:
         return False, "No metrics loaded"
 
-    # Get reference from first metric
-    first_metric = next(iter(metrics_data.values()))
-    ref_pods = set(first_metric['Pod_Name'])
-    ref_seq_len = first_metric['Sequence'].shape[0]
-
-    for metric_name, metric_data in metrics_data.items():
-        current_pods = set(metric_data['Pod_Name'])
-
-        if current_pods != ref_pods:
-            missing = ref_pods - current_pods
-            extra = current_pods - ref_pods
-            msg = f"{metric_name}: pod mismatch. "
-            if missing:
-                msg += f"Missing: {missing}. "
-            if extra:
-                msg += f"Extra: {extra}"
-            return False, msg
-
-        seq_len = metric_data['Sequence'].shape[0]
-        if seq_len != ref_seq_len:
-            return False, f"{metric_name}: sequence length mismatch ({seq_len} vs {ref_seq_len})"
-
-    return True, ""
+    pod_sets = {name: set(df.columns) for name, df in metrics.items()}
+    spans = {name: (int(df.index.min()), int(df.index.max())) for name, df in metrics.items()}
+    all_pods = set().union(*pod_sets.values())
+    partial = {name: len(p) for name, p in pod_sets.items() if p != all_pods}
+    if not partial and len(set(spans.values())) == 1:
+        return True, "All metrics have consistent pod names and time spans"
+    notes = []
+    if partial:
+        notes.append(f"metrics covering fewer of the {len(all_pods)} pods: " +
+                     ", ".join(f"{n} ({c})" for n, c in partial.items()))
+    if len(set(spans.values())) > 1:
+        notes.append("time spans differ between metrics (aligned by time in the fuse stage)")
+    return False, "; ".join(notes)
 
 
-def load_data(config_path: str) -> Dict[str, Any]:
+def load_data(config_path: str, case: Optional[str] = None) -> Dict[str, Any]:
     """
     Stage 1: Ingest
 
-    Load all data from LEMMA-RCA dataset and validate consistency.
+    Load all data for a case and validate it.
 
     Args:
         config_path: Path to pipeline_config.yaml
+        case: Case ID (default: the config's case; a downloaded LEMMA-RCA case wins over the sample)
 
     Returns:
         Dictionary containing:
-        - metrics: Dict[metric_name, DataFrame]
+        - metrics: Dict[metric_name, DataFrame]   (index: time, columns: pods)
         - logs_golden: DataFrame with golden signal logs
         - logs_frequency: DataFrame with frequency logs
-        - kpi: DataFrame with KPI data
+        - kpi: DataFrame with KPI data (index: time)
+        - fault_labels: root-cause pod and failure time
         - config: Configuration dictionary
         - validation_summary: Dict with validation results
     """
@@ -241,120 +293,87 @@ def load_data(config_path: str) -> Dict[str, Any]:
 
     # Load configuration
     print("\nLoading configuration...")
-    config = load_config(config_path)
+    config = resolve_data_path(load_config(config_path), case)
     data_path = config['data_path']
     label = config['label']
     metrics_to_load = config.get('metrics', [])
+    if config['data_source'] == 'lemma-rca':
+        # Each LEMMA-RCA case has its own set of pod metrics; download_data.py lists them
+        source = Path(data_path) / "SOURCE.json"
+        if source.exists():
+            metrics_to_load = json.loads(source.read_text()).get('metrics', metrics_to_load)
 
     print(f"  Case: {config['case']}")
+    print(f"  Source: {'LEMMA-RCA (downloaded)' if config['data_source'] == 'lemma-rca' else 'synthetic sample (bundled)'}")
     print(f"  Service: {label}")
-    print(f"  Data path: {data_path}")
+    print(f"  Data path: {Path(data_path).relative_to(ROOT) if Path(data_path).is_relative_to(ROOT) else data_path}")
 
     # Load metric data
     print(f"\nLoading metrics ({len(metrics_to_load)} files)...")
-    metrics_data = {}
-    loaded_metrics = 0
+    metrics_dfs = {}
 
     for metric_name in metrics_to_load:
         metric_data = load_metric_data(data_path, metric_name, label)
         if metric_data is not None:
             is_valid, error = validate_metric_data(metric_data, metric_name)
             if is_valid:
-                metrics_data[metric_name] = metric_data
+                metrics_dfs[metric_name] = to_frame(metric_data)
                 print(f"  ✓ {metric_name}: shape {metric_data['Sequence'].shape}")
-                loaded_metrics += 1
             else:
                 print(f"  ✗ {metric_name}: {error}")
         else:
             print(f"  ✗ {metric_name}: file not found")
 
-    if not metrics_data:
+    if not metrics_dfs:
         raise ValueError("No metrics loaded successfully")
 
     # Load log data
     print(f"\nLoading logs...")
-    logs_golden = load_log_data(data_path, "pod_level_log_golden_signal.npy", label)
-    logs_frequency = load_log_data(data_path, "pod_level_log_frequency.npy", label)
-
-    if logs_golden is not None:
-        is_valid, error = validate_metric_data(logs_golden, "golden_signal")
+    logs = {}
+    for key, filename, title in [('golden', 'pod_level_log_golden_signal.npy', 'Golden signal'),
+                                 ('frequency', 'pod_level_log_frequency.npy', 'Frequency logs')]:
+        entry = load_log_data(data_path, filename, label)
+        logs[key] = pd.DataFrame()
+        if entry is None:
+            print(f"  ✗ {title}: file not found")
+            continue
+        is_valid, error = validate_metric_data(entry, key)
         if is_valid:
-            print(f"  ✓ Golden signal: shape {logs_golden['Sequence'].shape}")
+            logs[key] = to_frame(entry)
+            print(f"  ✓ {title}: shape {entry['Sequence'].shape}")
         else:
-            print(f"  ✗ Golden signal: {error}")
-    else:
-        print(f"  ✗ Golden signal: file not found")
-
-    if logs_frequency is not None:
-        is_valid, error = validate_metric_data(logs_frequency, "frequency")
-        if is_valid:
-            print(f"  ✓ Frequency logs: shape {logs_frequency['Sequence'].shape}")
-        else:
-            print(f"  ✗ Frequency logs: {error}")
-    else:
-        print(f"  ✗ Frequency logs: file not found")
+            print(f"  ✗ {title}: {error}")
 
     # Load KPI data
     print(f"\nLoading KPI...")
     kpi_df = load_kpi_data(data_path)
     if kpi_df is not None:
-        print(f"  ✓ KPI: {kpi_df.shape[0]} rows, {kpi_df.shape[1]} columns")
+        print(f"  ✓ KPI: {kpi_df.shape[0]} rows, {kpi_df.shape[1] + 1} columns")
     else:
         print(f"  ✗ KPI: file not found")
         kpi_df = pd.DataFrame()
 
+    fault_labels = load_fault_labels(data_path)
+    if fault_labels.get('root_cause_pod'):
+        print(f"  ✓ Fault label: root cause {fault_labels['root_cause_pod']}")
+
     # Validate consistency
     print(f"\nValidating consistency...")
-    is_consistent, consistency_error = validate_consistency(metrics_data)
-    if is_consistent:
-        print(f"  ✓ All metrics have consistent pod names and sequence lengths")
-    else:
-        print(f"  ✗ Consistency check failed: {consistency_error}")
+    is_consistent, consistency_note = validate_consistency(metrics_dfs)
+    print(f"  {'✓' if is_consistent else '⚠'} {consistency_note}")
 
-    # Convert to DataFrames
-    print(f"\nConverting to DataFrames...")
-    metrics_dfs = {}
-
-    for metric_name, metric_data in metrics_data.items():
-        # Create DataFrame with pod names as columns
-        df = pd.DataFrame(
-            metric_data['Sequence'],
-            columns=metric_data['Pod_Name']
-        )
-        metrics_dfs[metric_name] = df
-        print(f"  ✓ {metric_name}: {df.shape[0]} timestamps × {df.shape[1]} pods")
-
-    # Convert log data to DataFrames
-    if logs_golden is not None:
-        logs_golden_df = pd.DataFrame(
-            logs_golden['Sequence'],
-            columns=logs_golden.get('Node_Name', logs_golden.get('Pod_Name', []))
-        )
-    else:
-        logs_golden_df = pd.DataFrame()
-
-    if logs_frequency is not None:
-        logs_frequency_df = pd.DataFrame(
-            logs_frequency['Sequence'],
-            columns=logs_frequency.get('Node_Name', logs_frequency.get('Pod_Name', []))
-        )
-    else:
-        logs_frequency_df = pd.DataFrame()
-
-    # Validation summary
+    first = next(iter(metrics_dfs.values()))
     validation_summary = {
         'metrics_loaded': len(metrics_dfs),
         'metrics_failed': len(metrics_to_load) - len(metrics_dfs),
-        'total_pods': max(
-            [df.shape[1] for df in metrics_dfs.values()] +
-            [logs_golden_df.shape[1] if not logs_golden_df.empty else 0] +
-            [logs_frequency_df.shape[1] if not logs_frequency_df.empty else 0]
-        ),
-        'total_timestamps': next(iter(metrics_dfs.values())).shape[0],
+        'total_pods': len(set().union(*(df.columns for df in metrics_dfs.values()))),
+        'total_timestamps': first.shape[0],
         'consistency_valid': is_consistent,
-        'logs_golden_available': not logs_golden_df.empty,
-        'logs_frequency_available': not logs_frequency_df.empty,
+        'consistency_note': consistency_note,
+        'logs_golden_available': not logs['golden'].empty,
+        'logs_frequency_available': not logs['frequency'].empty,
         'kpi_available': not kpi_df.empty,
+        'fault_label_available': bool(fault_labels.get('root_cause_pod')),
     }
 
     print(f"\n{'─'*70}")
@@ -363,16 +382,18 @@ def load_data(config_path: str) -> Dict[str, Any]:
     print(f"Metrics loaded:     {validation_summary['metrics_loaded']}")
     print(f"Pods:               {validation_summary['total_pods']}")
     print(f"Timestamps:         {validation_summary['total_timestamps']}")
-    print(f"Consistency:        {'✓ Valid' if validation_summary['consistency_valid'] else '✗ Invalid'}")
+    print(f"Consistency:        {'✓ Valid' if is_consistent else '⚠ See note above'}")
     print(f"Golden logs:        {'✓ Available' if validation_summary['logs_golden_available'] else '✗ Not found'}")
     print(f"Frequency logs:     {'✓ Available' if validation_summary['logs_frequency_available'] else '✗ Not found'}")
     print(f"KPI data:           {'✓ Available' if validation_summary['kpi_available'] else '✗ Not found'}")
+    print(f"Fault label:        {'✓ Available' if validation_summary['fault_label_available'] else '✗ Not found'}")
 
     return {
         'metrics': metrics_dfs,
-        'logs_golden': logs_golden_df,
-        'logs_frequency': logs_frequency_df,
+        'logs_golden': logs['golden'],
+        'logs_frequency': logs['frequency'],
         'kpi': kpi_df,
+        'fault_labels': fault_labels,
         'config': config,
         'validation_summary': validation_summary,
     }
@@ -380,5 +401,5 @@ def load_data(config_path: str) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    data_dict = load_data("config/pipeline_config.yaml")
+    data_dict = load_data(str(ROOT / "config" / "pipeline_config.yaml"))
     print("\nData loaded successfully!")
