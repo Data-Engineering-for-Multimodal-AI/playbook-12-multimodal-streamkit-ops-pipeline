@@ -1,0 +1,24 @@
+[project]
+name = "playbook-12-multimodal-streamkit-ops-pipeline"
+version = "2026.10"
+description = "A six-stage multimodal pipeline for IT-operations root cause analysis on LEMMA-RCA (Data Engineering for Multimodal AI, Chapter 12)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyyaml>=6.0",
+    "huggingface_hub>=0.25",
+    # optional LLM analysis (any OpenAI-compatible endpoint); rule-based analysis without it
+    "openai>=1.40",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
