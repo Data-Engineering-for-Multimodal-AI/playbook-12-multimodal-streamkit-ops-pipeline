@@ -22,7 +22,7 @@ It runs on two kinds of data:
 |---|---|---|
 | Where | `data/20240115/`, in the repository | `data/lemma-rca/<case>/`, made by `download_data.py` |
 | Size | 8 pods, 5,000 steps, 3 MB | about 260 pods, 45 hours at 30-second resolution, 37 MB per case (a ~200 MB download) |
-| What it shows | The pipeline end to end, in a tenth of a second | What RCA is like on a real cluster |
+| What it shows | The pipeline end to end: the six stages take a tenth of a second (the first run after installing takes about 15 s while Python loads the libraries) | What RCA is like on a real cluster: a few seconds per case |
 
 ## Quick start
 
