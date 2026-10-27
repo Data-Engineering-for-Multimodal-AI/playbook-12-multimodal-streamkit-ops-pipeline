@@ -48,6 +48,10 @@ def resolve_data_path(config: Dict[str, Any], case: Optional[str] = None) -> Dic
     sample = dict(data_path=str(ROOT / config['data_path']), data_source='sample')
     if case is None:
         config.update(**sample)
+        if (ROOT / "data" / "lemma-rca" / str(config['case']) / "fault_labels.json").exists():
+            # The book runs `python run_pipeline.py` right after the download
+            print(f"  Using the bundled sample. For the downloaded LEMMA-RCA case: "
+                  f"python run_pipeline.py --case {config['case']}")
         return config
     case = str(case)
     downloaded = ROOT / "data" / "lemma-rca" / case
