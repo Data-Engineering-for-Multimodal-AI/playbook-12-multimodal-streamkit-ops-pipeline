@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026.10.1 (2026-10-27)
+
+Checked against the book (Early Release, pages 496–500).
+
+### Added
+- All six LEMMA-RCA Cloud Computing cases run, as the book's "Extending the Playbook" says (page 499).
+  The downloader converts each case's own pod metrics, reads its SLI (error rate, latency or hourly
+  cost), time zone and root cause, and the incident threshold follows the SLI. Results for every case
+  are in the README; CI runs the four new cases.
+- `.env.example` with the LLM variables.
+- `python run_pipeline.py` without `--case` prints the `--case` command when the default case has been
+  downloaded (the book runs it right after the download).
+
+### Changed
+- README: page numbers; the six-case results; notes on the book's `cd streamkit-ops-playbook`,
+  `ANTHROPIC_API_KEY` and dataset licence (page 497 says CC BY-ND 4.0; the dataset card says CC BY-NC 4.0).
+
 ## 2026.10 (2026-10-26)
 
 Maintenance update. The code as printed in the book is tagged `first-edition`. The printed commands and stage functions keep working.

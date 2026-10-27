@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-27T00:05:39.939137+00:00",
+  "timestamp": "2026-10-27T21:53:44.177354+00:00",
   "pipeline_config": {
     "case": "20240115",
     "service": "book_info",
@@ -147,6 +147,7 @@
     "root_cause": null,
     "time_note": "the sample has no clock: its label time cannot be compared with the data",
     "root_cause_pod": "scenario10-malware-deployment-57db4df9f4-p8h7h",
+    "root_cause_matched_pod": "scenario10-malware-deployment-57db4df9f4-p8h7h",
     "root_cause_rank": 1,
     "pods_ranked": 8,
     "hit_at_1": true,

@@ -1,6 +1,6 @@
 # StreamKit Ops Playbook
 
-**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026). Page numbers to be confirmed.
+**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026), pages 496–500 (Early Release page numbers; they may differ in the final print).
 Book: https://oreil.ly/data-engineering-multimodal
 
 > Want the code exactly as printed? Use the `first-edition` tag. This branch is the 2026 maintenance update; see [Differences from the printed book](#differences-from-the-printed-book).
@@ -59,19 +59,36 @@ What the downloader does:
 - **Metrics.** It downloads the case's metrics zip (193 MB for 20240115) at a pinned dataset revision and checks its SHA-256.
 - **Logs.** From the case's log zip (2.3 GB) it reads only the two log-signal files, with range requests, so the whole zip isn't downloaded.
 - **Conversion.** It converts everything into the pipeline's format at 30-second resolution, in `data/lemma-rca/20240115/` (37 MB, about 10 seconds).
-- **Fault label.** The case's README slides are the only place the label is given, so the downloader reads the root-cause pod and the failure time from them into `fault_labels.json`.
+- **Fault label.** The case's README slides are the only place the label is given, so the downloader reads the root-cause pod and the failure time from them into `fault_labels.json`. Where the slides can't be read reliably (the time zone, the SLI, root causes named as a deployment or an EC2 instance), `CASES` in `download_data.py` records what they say.
 - **Safe loading.** The dataset's `.npy` files are Python pickles, which can run code when loaded. They are read with a loader that accepts numbers, text and NumPy arrays only (`pipeline/safe_npy.py`).
 
-Available cases: 20231207, 20231221, 20240115, 20240124, 20240207, 20240215 (`python download_data.py --list`). Case 20240207 has no logs, so the pipeline uses its metrics and KPI only:
+Without `--case`, the pipeline runs on the bundled sample. With `--case`, it runs on that downloaded case, and the reports go to `output/lemma-rca-<case>/`. (The book runs `python run_pipeline.py` right after the download; that runs the sample, and says how to run the downloaded case.)
+
+### 3. The other five cases
+
+All six Cloud Computing cases run the same way (`python download_data.py --list`):
 
 ```bash
-python download_data.py --case 20240207
-python run_pipeline.py --case 20240207
+python download_data.py --case 20240215
+python run_pipeline.py --case 20240215
 ```
 
-Without `--case`, the pipeline runs on the bundled sample. With `--case`, it runs on that downloaded case, and the reports go to `output/lemma-rca-<case>/`.
+The cases differ more than the book suggests: each has its own pod metrics, and the signal that shows users being hurt (the SLI) is the error rate in two cases, latency in three, and the cluster's hourly cost in one. The pipeline turns the SLI into a KPI where higher is better: the share of requests served for an error rate, and the usual value divided by the current one for latency and cost (the usual value is the median over the recording). An incident is an error rate above 1% (the alert rule in the case slides) or a latency or cost above 1.5 times the usual value.
 
-### 3. LLM analysis (optional)
+Results on 2026-10-27 (macOS 26.5.1, Python 3.13.16), rule-based analysis:
+
+| Case | Fault (from the slides) | SLI | Pods | KPI incident start vs the labelled failure | Root cause in the pod ranking |
+|---|---|---|---|---|---|
+| 20231207 | A latent bug raises the CPU load of one `productpage-v1` replica | Latency | 196 | 136.9 min later (latency rose slowly) | 5th (`productpage-v1-94d68db49-j7t55`); actions recommended on it |
+| 20231221 | Robot-shop's `ratings` pod moves to `productpage-v1`'s node and takes its CPU | Latency | 159 | 2.1 min earlier | 21st (`ratings-aggregated`) |
+| 20240115 | A malware pod infects about 30 others, which flood the web server | Error rate | 257 | 1.6 min earlier | 80th (see below) |
+| 20240124 | An infinite loop occupies one of four CPUs on an EC2 instance | Latency | 15 instances | None found: 5-minute latency never reached 1.5 times the usual value | 12th of 15 (the baseline is the first 70% of the recording, which includes the failure) |
+| 20240207 | A `git push` deploys wrong resource limits (not a pod) | Error rate | 264 | 3.7 min earlier | Not scored |
+| 20240215 | A coin miner runs in the `details-v1` pod | Hourly cost | 59 | 1.5 min earlier | 16th (`details-v1-79548dfc8f-b45tm`) |
+
+The KPI finds the incident within four minutes of the label in four cases. Finding the root cause by anomaly counts mostly doesn't work: the pods that suffer (victims, bots, autoscaled replicas) deviate more than the cause. Case 20231221's root cause is taken to be the dataset's `ratings-aggregated` series: robot-shop's ratings pod changed name when it moved, and this is the only ratings series outside book-info's `ratings-v1` and `ratings-v2`. Case 20231221's `is_error` column is 1 for every request, so its latency is used. Case 20240207 has no logs; 20240124 has no log-frequency file.
+
+### 4. LLM analysis (optional)
 
 For analysis with any OpenAI-compatible LLM, set your API key and base URL:
 
@@ -82,7 +99,7 @@ export LLM_MODEL="gpt-4o"  # optional, defaults to gpt-4o
 python run_pipeline.py
 ```
 
-The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based.
+The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based. The book's `export ANTHROPIC_API_KEY=...` (page 499) is not read by the code; use the three variables above with the provider's OpenAI-compatible endpoint. They are listed in `.env.example`.
 
 ### Individual stages
 
@@ -109,16 +126,21 @@ Each stage also runs on its own from the repository folder, for example `python 
 | Date | OS | Python | What |
 |---|---|---|---|
 | 2026-10-26 | macOS 26.5.1 (Apple M3) | 3.12.15 and 3.13.16 | `make smoke` (10 tests); the sample; LEMMA-RCA cases 20240115 and 20240207 (output below) |
+| 2026-10-27 | macOS 26.5.1 (Apple M3) | 3.13.16 | All six LEMMA-RCA cases (table above); `make smoke` |
 | 2026-10-26 | Ubuntu (GitHub Actions) | 3.12, 3.13 | `make smoke`, then after `pip install -r requirements.txt`: the sample, and both cases downloaded and run |
 
 Versions are pinned in `uv.lock` and `requirements.txt` (NumPy 2.5, pandas 3.1, huggingface_hub 2.3, openai 3.39).
 
 ## Differences from the printed book
 
-The printed commands still work: `pip install -r requirements.txt`, `python download_data.py [--case ...]`, `python run_pipeline.py [--case ...]`, and the stage functions in the snippet above. What changed:
+The printed commands still work: `pip install -r requirements.txt`, `python download_data.py --case 20240115`, `python run_pipeline.py`, and the stage functions in the snippet above. The left column is the first edition: the code at the `first-edition` tag, which the book describes.
 
-| Area | Printed version | Now |
+| Area | First edition | Now |
 |---|---|---|
+| Folder | The book's `cd streamkit-ops-playbook` (page 499) | `cd playbook-12-multimodal-streamkit-ops-pipeline` |
+| `python run_pipeline.py` after the download (page 499) | Ran the synthetic sample | Still runs the sample, and prints the `--case` command for the downloaded case |
+| LLM | The book's `ANTHROPIC_API_KEY` (page 499) was never read; the code read `LLM_API_KEY` | Unchanged: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` |
+| Other cases (page 499) | Could not run | All six run (table above) |
 | Sample data | Presented as LEMMA-RCA output | Labelled as what it is: synthetic data with made-up pod names (see [Data and licenses](#data-and-licenses)). Kept unchanged as the default |
 | Real data | `download_data.py` unzipped into a layout the pipeline doesn't read, so every run used the synthetic files | Real cases are converted into the pipeline's format and run with `--case` |
 | Baseline | "The first 70% of the data" was the first 70% of rows, which are sorted by pod name. So the baseline was the first 6 pods alphabetically, and the 3 "affected pods" were simply the last 3 alphabetically | Split by time, the same for every pod. The baseline is each pod's normal (KPI fine) windows before the incident; the analysis covers the incident |
@@ -126,7 +148,7 @@ The printed commands still work: `pip install -r requirements.txt`, `python down
 | Windows | Neighbouring windows shared a sample; the configured window size and aggregations were ignored | Windows on the time axis, from the config; each sample in exactly one window |
 | Pods | Only pods present in every metric were kept. On real data that drops the root-cause pod: storage IOPS covers 6 of 257 pods | All pods, with the features each one has |
 | Guardrails | `action_policies` and the restart limit in the config were never applied, and the rate limit only counted earlier runs | Per-action minimum confidence, actions that always need a human (for example `scale_down`), at most 5 restarts and 20 actions per minute |
-| LLM | A failed call dropped the pod from the analysis | Falls back to the rule-based analysis |
+| LLM failure | A failed call dropped the pod from the analysis | Falls back to the rule-based analysis |
 | Act | Unseeded; the printed duration differed from the logged end time, and a `scale_up` could end with fewer replicas | Seeded and consistent |
 | Fault label and KPI | Loaded but never used | The KPI finds the incident; the report scores the run against the label |
 | Safety | `np.load(allow_pickle=True)` on downloaded files | A loader that refuses anything but data |
@@ -139,13 +161,13 @@ The pipeline is still the book's: the same six stages, z-score anomalies (2 σ),
 | Data | Source | License |
 |---|---|---|
 | `data/20240115/` (bundled) | Synthetic, committed with the first edition (how it was generated is not recorded). It is not LEMMA-RCA data: the values are seeded random numbers, 7 of the 8 pod names are made up, and the 8th pod (the "malware" pod) borrows its name and fault label from LEMMA-RCA case 20240115. Its `fault_labels.json` gives the real case's failure time, which the sample has no clock for, and its `inject_time` text doesn't match its own `inject_timestamp` (2024-01-14 07:26:39 UTC). The files are kept as committed | MIT, like the code |
-| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial). Not redistributed here; `download_data.py` fetches it |
+| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial), per the dataset card at that revision; the book (page 497) says CC BY-ND 4.0. Not redistributed here; `download_data.py` fetches it |
 
 ## Expected output
 
 ### The bundled sample
 
-From `python run_pipeline.py` on 2026-10-26, macOS 26.5.1, Python 3.13.16. The timestamps are replaced by `<your-run-timestamp>`.
+From `python run_pipeline.py` on 2026-10-26, macOS 26.5.1, Python 3.13.16. The timestamps are replaced by `<your-run-timestamp>`. This is the output of this version; it may differ from the output printed in the book, and that's okay.
 
 #### Stage 1: Ingest
 
