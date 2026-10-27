@@ -1,165 +1,153 @@
 # StreamKit Ops Playbook
 
-A six-stage multimodal AI pipeline for IT operations root cause analysis using the LEMMA-RCA dataset.
+**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026). Page numbers to be confirmed.
+Book: https://oreil.ly/data-engineering-multimodal
 
-This project demonstrates the complete workflow from Chapter 12 of "Data Engineering for Multimodal AI", implementing an automated root cause analysis system that ingests metrics and logs, fuses them intelligently, applies anomaly detection with optional LLM-powered reasoning, enforces safety guardrails, simulates remediation actions, and provides comprehensive observability.
+> Want the code exactly as printed? Use the `first-edition` tag. This branch is the 2026 maintenance update; see [Differences from the printed book](#differences-from-the-printed-book).
 
-## What This Project Does
+## What you'll build
 
-The pipeline processes time-series operational data to detect anomalies and recommend intelligent remediation:
+A six-stage multimodal pipeline for IT-operations root cause analysis (RCA). It runs on the LEMMA-RCA cloud dataset: a Kubernetes cluster of about 260 pods, with injected failures.
 
-1. **Ingest** - Load metrics (CPU, memory, network, storage) and logs from the LEMMA-RCA dataset
-2. **Fuse** - Align metrics and logs by pod name and time window into a unified feature space
-3. **Plan** - Detect anomalies, compute baselines, and optionally use an LLM for intelligent analysis
-4. **Check** - Apply guardrails: input validation, action filtering, confidence gating, escalation rules
-5. **Act** - Simulate execution of approved actions with before/after state tracking
-6. **Observe** - Aggregate results into observability dashboards and reports
+1. **Ingest:** load the pod metrics (CPU, memory, network, storage), the log signals, the service KPI and the fault label.
+2. **Fuse:** align metrics and logs by pod and 5-minute time window into one feature table.
+3. **Plan:** find when users started being hurt (from the KPI), compare every pod with its own normal before that, rank the pods, and recommend actions. The rules are built in, or an LLM can be used (optional).
+4. **Check:** apply the guardrails: allowed actions, confidence gates, per-action policies, a restart limit and a rate limit.
+5. **Act:** simulate the approved actions; nothing touches a cluster.
+6. **Observe:** write a JSON report and a text dashboard. They include how the run scores against the case's fault label: where the real root cause landed in the ranking, and how close the KPI incident is to the labelled failure time.
 
-## Prerequisites
+It runs on two kinds of data:
 
-- Python 3.9 or higher
-- pip (Python package manager)
-- Internet connection (for downloading LEMMA-RCA dataset from HuggingFace)
-- Optional: LLM_API_KEY environment variable for LLM integration (any OpenAI-compatible API)
+| | Bundled synthetic sample (default) | Real LEMMA-RCA cases (downloaded) |
+|---|---|---|
+| Where | `data/20240115/`, in the repository | `data/lemma-rca/<case>/`, made by `download_data.py` |
+| Size | 8 pods, 5,000 steps, 3 MB | about 260 pods, 45 hours at 30-second resolution, 37 MB per case (a ~200 MB download) |
+| What it shows | The pipeline end to end, in a tenth of a second | What RCA is like on a real cluster |
 
-## Setup
+## Quick start
 
-### 1. Install Dependencies
+You need Python 3.12 or newer and about 150 MB of disk space for the environment. Add about 250 MB per LEMMA-RCA case (the download cache plus the converted files).
 
 ```bash
+# Clone the repository
+git clone https://github.com/Data-Engineering-for-Multimodal-AI/playbook-12-multimodal-streamkit-ops-pipeline.git
+cd playbook-12-multimodal-streamkit-ops-pipeline
+
+# Create and activate a virtual environment, then install dependencies
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Download Data
+With [uv](https://docs.astral.sh/uv/): `uv sync`, then prefix commands with `uv run`. The Makefile has shortcuts: `make run`, `make run-lemma`, `make run-20240207`, `make smoke`.
 
-Download the LEMMA-RCA Cloud Computing dataset (default case 20240115):
-
-```bash
-python download_data.py
-```
-
-To download a different case (e.g., 20240207):
-
-```bash
-python download_data.py --case 20240207
-```
-
-Available cases: 20231207, 20231221, 20240115, 20240124, 20240207, 20240215
-
-The data will be extracted to `data/{case}/`.
-
-### 3. Configure Pipeline (Optional)
-
-Edit `config/pipeline_config.yaml` to adjust:
-- Case ID and dataset labels
-- Data paths
-- Metric thresholds
-- Guardrail confidence gates
-- Allowed remediation actions
-
-## Running the Pipeline
-
-### End-to-End Pipeline
-
-Run all six stages sequentially:
+### 1. Run it on the bundled sample
 
 ```bash
 python run_pipeline.py
 ```
 
-With a specific case:
+### 2. Download a real LEMMA-RCA case and run it
 
 ```bash
+python download_data.py                    # case 20240115 (default)
+python run_pipeline.py --case 20240115
+```
+
+What the downloader does:
+
+- **Metrics.** It downloads the case's metrics zip (193 MB for 20240115) at a pinned dataset revision and checks its SHA-256.
+- **Logs.** From the case's log zip (2.3 GB) it reads only the two log-signal files, with range requests, so the whole zip isn't downloaded.
+- **Conversion.** It converts everything into the pipeline's format at 30-second resolution, in `data/lemma-rca/20240115/` (37 MB, about 10 seconds).
+- **Fault label.** The case's README slides are the only place the label is given, so the downloader reads the root-cause pod and the failure time from them into `fault_labels.json`.
+- **Safe loading.** The dataset's `.npy` files are Python pickles, which can run code when loaded. They are read with a loader that accepts numbers, text and NumPy arrays only (`pipeline/safe_npy.py`).
+
+Available cases: 20231207, 20231221, 20240115, 20240124, 20240207, 20240215 (`python download_data.py --list`). Case 20240207 has no logs, so the pipeline uses its metrics and KPI only:
+
+```bash
+python download_data.py --case 20240207
 python run_pipeline.py --case 20240207
 ```
 
-### Individual Stages
+Without `--case`, the pipeline runs on the bundled sample. With `--case`, it runs on that downloaded case, and the reports go to `output/lemma-rca-<case>/`.
 
-You can run each stage independently for testing:
+### 3. LLM analysis (optional)
+
+For analysis with any OpenAI-compatible LLM, set your API key and base URL:
+
+```bash
+export LLM_API_KEY="your-api-key"
+export LLM_BASE_URL="https://api.your-provider.com/v1"  # optional, defaults to OpenAI
+export LLM_MODEL="gpt-4o"  # optional, defaults to gpt-4o
+python run_pipeline.py
+```
+
+The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based.
+
+### Individual stages
 
 ```python
-# Stage 1: Ingest
 from pipeline.ingest import load_data
-data_dict = load_data('config/pipeline_config.yaml')
-
-# Stage 2: Fuse
 from pipeline.fuse import fuse_modalities
-fused_df = fuse_modalities(data_dict)
-
-# Stage 3: Plan
 from pipeline.plan import plan_analysis
-plan_result = plan_analysis(fused_df, data_dict['config'])
-
-# Stage 4: Check
 from pipeline.check import check_actions
-approved, escalated, rejected = check_actions(plan_result, data_dict['config'])
-
-# Stage 5: Act
 from pipeline.act import execute_actions
-execution_log = execute_actions(approved, escalated, rejected)
-
-# Stage 6: Observe
 from pipeline.observe import generate_report
+
+data_dict = load_data('config/pipeline_config.yaml')          # or load_data(..., case='20240115')
+fused_df = fuse_modalities(data_dict)
+plan_result = plan_analysis(fused_df, data_dict['config'])
+approved, escalated, rejected = check_actions(plan_result, data_dict['config'])
+execution_log = execute_actions(approved, escalated, rejected)
 report = generate_report(execution_log, plan_result, data_dict['config'])
 ```
 
-## Expected Output (Stage by Stage)
+Each stage also runs on its own from the repository folder, for example `python -m pipeline.plan`.
 
-This section shows the actual output you should see at each stage when running the pipeline with the default case (`20240115`). Use this as a reference to verify your pipeline is working correctly.
+## Tested on
 
-### Step 0: Download Data
+| Date | OS | Python | What |
+|---|---|---|---|
+| 2026-10-26 | macOS 26.5.1 (Apple M3) | 3.12.15 and 3.13.16 | `make smoke` (10 tests); the sample; LEMMA-RCA cases 20240115 and 20240207 (output below) |
+| 2026-10-26 | Ubuntu (GitHub Actions) | 3.12, 3.13 | `make smoke`, then after `pip install -r requirements.txt`: the sample, and both cases downloaded and run |
 
-```bash
-python download_data.py
-```
+Versions are pinned in `uv.lock` and `requirements.txt` (NumPy 2.5, pandas 3.1, huggingface_hub 2.3, openai 3.39).
 
-**Expected output:**
+## Differences from the printed book
 
-```
-Downloading LEMMA-RCA dataset for case 20240115...
-Repository: Lemma-RCA-NEC/Cloud_Computing_Preprocessed
-Output directory: data/20240115
+The printed commands still work: `pip install -r requirements.txt`, `python download_data.py [--case ...]`, `python run_pipeline.py [--case ...]`, and the stage functions in the snippet above. What changed:
 
-Found 13 files in repository
+| Area | Printed version | Now |
+|---|---|---|
+| Sample data | Presented as LEMMA-RCA output | Labelled as what it is: synthetic data with made-up pod names (see [Data and licenses](#data-and-licenses)). Kept unchanged as the default |
+| Real data | `download_data.py` unzipped into a layout the pipeline doesn't read, so every run used the synthetic files | Real cases are converted into the pipeline's format and run with `--case` |
+| Baseline | "The first 70% of the data" was the first 70% of rows, which are sorted by pod name. So the baseline was the first 6 pods alphabetically, and the 3 "affected pods" were simply the last 3 alphabetically | Split by time, the same for every pod. The baseline is each pod's normal (KPI fine) windows before the incident; the analysis covers the incident |
+| `--case` | Changed the label in the report but not the data that was loaded | Loads that case |
+| Windows | Neighbouring windows shared a sample; the configured window size and aggregations were ignored | Windows on the time axis, from the config; each sample in exactly one window |
+| Pods | Only pods present in every metric were kept. On real data that drops the root-cause pod: storage IOPS covers 6 of 257 pods | All pods, with the features each one has |
+| Guardrails | `action_policies` and the restart limit in the config were never applied, and the rate limit only counted earlier runs | Per-action minimum confidence, actions that always need a human (for example `scale_down`), at most 5 restarts and 20 actions per minute |
+| LLM | A failed call dropped the pod from the analysis | Falls back to the rule-based analysis |
+| Act | Unseeded; the printed duration differed from the logged end time, and a `scale_up` could end with fewer replicas | Seeded and consistent |
+| Fault label and KPI | Loaded but never used | The KPI finds the incident; the report scores the run against the label |
+| Safety | `np.load(allow_pickle=True)` on downloaded files | A loader that refuses anything but data |
+| Install | Unpinned; scikit-learn and requests were never imported; Python 3.9 | Pinned and locked, Python 3.12+; unused packages removed |
 
-Found 2 zip files for case 20240115:
-  Log Data/20240115.zip
-  Metrics Data/20240115.zip
+The pipeline is still the book's: the same six stages, z-score anomalies (2 σ), rule-based recommendations with the same confidence blend, and the same thresholds. Also new: `pipeline/safe_npy.py`, `pipeline/evaluate.py` and an `incident` section in the config.
 
-Downloading Log Data/20240115.zip...
-  Downloaded to: /Users/<you>/.cache/huggingface/hub/datasets--Lemma-RCA-NEC--Cloud_Computing_Preprocessed/...
-  Extracting to data/20240115...
-  Extraction complete
+## Data and licenses
 
-Downloading Metrics Data/20240115.zip...
-  Downloaded to: /Users/<you>/.cache/huggingface/hub/datasets--Lemma-RCA-NEC--Cloud_Computing_Preprocessed/...
-  Extracting to data/20240115...
-  Extraction complete
+| Data | Source | License |
+|---|---|---|
+| `data/20240115/` (bundled) | Synthetic, committed with the first edition (how it was generated is not recorded). It is not LEMMA-RCA data: the values are seeded random numbers, 7 of the 8 pod names are made up, and the 8th pod (the "malware" pod) borrows its name and fault label from LEMMA-RCA case 20240115. Its `fault_labels.json` gives the real case's failure time, which the sample has no clock for, and its `inject_time` text doesn't match its own `inject_timestamp` (2024-01-14 07:26:39 UTC). The files are kept as committed | MIT, like the code |
+| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial). Not redistributed here; `download_data.py` fetches it |
 
-Validating extracted files...
-Found 301 data files:
-  KPI20140115.csv
-  adservice-7df8c84f69-kwldj_messages_structured.csv
-  ... (additional pod log CSV files)
+## Expected output
 
-Metric files (21):
-  pod_level_data_cpu_usage.npy
-  pod_level_data_memory_usage.npy
-  pod_level_data_rate_received_packets.npy
-  ... (additional metric .npy files)
+### The bundled sample
 
-All required files found!
+From `python run_pipeline.py` on 2026-10-26, macOS 26.5.1, Python 3.13.16. The timestamps are replaced by `<your-run-timestamp>`.
 
-Dataset successfully downloaded and extracted to data/20240115
-```
-
-The download retrieves 2 zip files (log data and metrics data) and extracts ~301 files including `.npy` metric arrays, `.npy` log arrays, KPI CSVs, and per-pod structured log CSVs.
-
-### Stage 1: Ingest
-
-The pipeline loads 7 metrics, 2 log types, and KPI data. Each metric is a 5000-timestamp x 8-pod array.
-
-**Expected output:**
+#### Stage 1: Ingest
 
 ```
 ======================================================================
@@ -168,8 +156,9 @@ STAGE 1: INGEST
 
 Loading configuration...
   Case: 20240115
+  Source: synthetic sample (bundled)
   Service: book_info
-  Data path: data/20240115/
+  Data path: data/20240115
 
 Loading metrics (7 files)...
   ✓ cpu_usage: shape (5000, 8)
@@ -186,18 +175,10 @@ Loading logs...
 
 Loading KPI...
   ✓ KPI: 5000 rows, 2 columns
+  ✓ Fault label: root cause scenario10-malware-deployment-57db4df9f4-p8h7h
 
 Validating consistency...
-  ✓ All metrics have consistent pod names and sequence lengths
-
-Converting to DataFrames...
-  ✓ cpu_usage: 5000 timestamps × 8 pods
-  ✓ memory_usage: 5000 timestamps × 8 pods
-  ✓ rate_received_packets: 5000 timestamps × 8 pods
-  ✓ rate_transmitted_packets: 5000 timestamps × 8 pods
-  ✓ rate_storage_iops: 5000 timestamps × 8 pods
-  ✓ received_bandwidth: 5000 timestamps × 8 pods
-  ✓ transmit_bandwidth: 5000 timestamps × 8 pods
+  ✓ All metrics have consistent pod names and time spans
 
 ──────────────────────────────────────────────────────────────────────
 INGESTION SUMMARY
@@ -209,15 +190,12 @@ Consistency:        ✓ Valid
 Golden logs:        ✓ Available
 Frequency logs:     ✓ Available
 KPI data:           ✓ Available
+Fault label:        ✓ Available
 ```
 
-**What to check:** All 7 metrics should load with shape `(5000, 8)`. The consistency check should pass. Golden signal logs, frequency logs, and KPI should all be marked `✓ Available`.
+#### Stage 2: Fuse
 
-### Stage 2: Fuse
-
-The fuse stage aligns all modalities by pod and time window. With 5000 timestamps and a window size of 300, it creates 17 windows per pod (16 full windows + 1 partial that meets the half-window threshold), and with 8 pods that yields 136 total rows.
-
-**Expected output:**
+5,000 steps in 300-step windows make 16 full windows and a final partial one of 200 steps. A partial window is kept when it's at least half a window long.
 
 ```
 ======================================================================
@@ -225,17 +203,9 @@ STAGE 2: FUSE
 ======================================================================
 
 Common pods across all modalities: 8
-Total timestamps: 5000
-Time windows created: 17 windows of size 300
-
-Processing pod: api-server-def456
-Processing pod: cache-layer-jkl012
-Processing pod: db-service-ghi789
-Processing pod: frontend-v1-abc123
-Processing pod: gateway-stu901
-Processing pod: queue-service-mno345
-Processing pod: scenario10-malware-deployment-57db4df9f4-p8h7h
-Processing pod: worker-pqr678
+Pods with metrics: 8
+Time span: 5000 seconds
+Time windows created: 17 windows of 300 s
 
 ──────────────────────────────────────────────────────────────────────
 FUSION SUMMARY
@@ -244,135 +214,154 @@ Pods fused:         8
 Windows per pod:    17
 Total rows:         136
 Total columns:      67
+Empty feature cells: 0.0% (metrics a pod doesn't report)
 Feature groups:
   - Metrics: 49
   - Golden logs: 7
   - Frequency logs: 7
 ```
 
-**What to check:** 8 pods should be found across all modalities. The fusion should produce 136 rows (8 pods x 17 windows) and 67 columns (7 metrics x 7 aggregations = 49, plus 7 golden log features, 7 frequency log features, and 4 metadata columns: pod, window_start, window_end, window_id).
+#### Stage 3: Plan
 
-### Stage 3: Plan
-
-The plan stage computes baselines from the first 70% of data and detects anomalies in the remaining 30% using z-score thresholds. Without an LLM key, it falls back to rule-based analysis.
-
-**Expected output:**
+The KPI (a health score in the sample) falls from 0.95 to 0.60 at step 3600. Each pod's baseline is its 12 windows before that point. The malware pod stands out with 315 anomalies; every other pod has a few (18 to 26 for the top 4 shown, which are false positives).
 
 ```
 ======================================================================
 STAGE 3: PLAN
 ======================================================================
 
-Computing baselines from first 70% of data...
-  ✓ Baseline stats computed for 63 features
+Looking for the incident in the KPI...
+  ✓ 1 period(s) with the KPI below 0.8; analysing the largest:
+    step 3600 to step 4800 (5 windows; KPI 0.950 before, 0.598 during)
 
-Detecting anomalies in remaining 30% of data...
-  ✓ 386 anomalies detected
+Computing baselines per pod from 12 of 17 windows (normal windows before the incident)...
+  ✓ Baseline stats computed for 63 features × 8 pods
 
-  Affected pods: 3
+Detecting anomalies in 5 windows...
+  ✓ 446 anomalies detected
 
-Generating analyses and recommendations...
-  → queue-service-mno345: Using rule-based analysis... ✓
+  Affected pods: 8
+       315  scenario10-malware-deployment-57db4df9f4-p8h7h
+        26  db-service-ghi789
+        22  frontend-v1-abc123
+        19  gateway-stu901
+        18  worker-pqr678
+
+Generating analyses and recommendations (top 8 pods)...
   → scenario10-malware-deployment-57db4df9f4-p8h7h: Using rule-based analysis... ✓
+  → db-service-ghi789: Using rule-based analysis... ✓
+  → frontend-v1-abc123: Using rule-based analysis... ✓
+  → gateway-stu901: Using rule-based analysis... ✓
   → worker-pqr678: Using rule-based analysis... ✓
+  → cache-layer-jkl012: Using rule-based analysis... ✓
+  → queue-service-mno345: Using rule-based analysis... ✓
+  → api-server-def456: Using rule-based analysis... ✓
 
 ──────────────────────────────────────────────────────────────────────
 PLANNING SUMMARY
 ──────────────────────────────────────────────────────────────────────
-Anomalies detected:     386
-Affected pods:          3
-Analyses generated:     3
-Avg anomalies/pod:      128.7
+Anomalies detected:     446
+Affected pods:          8
+Analyses generated:     8
+Avg anomalies/pod:      55.8
 LLM analysis:           ✗ Disabled
 ```
 
-**What to check:** The pipeline detects ~386 anomalies across 3 affected pods (out of 8 total). The malware deployment pod (`scenario10-malware-deployment-57db4df9f4-p8h7h`) has the most severe anomalies, which makes sense since the LEMMA-RCA dataset includes injected fault scenarios. Note that LLM analysis shows `✗ Disabled` unless you set the `LLM_API_KEY` environment variable.
-
-### Stage 4: Check (Guardrails)
-
-The check stage applies confidence gating: actions with confidence >= 0.85 are auto-approved, 0.60-0.85 are escalated for human review, and < 0.60 are rejected.
-
-**Expected output:**
+#### Stage 4: Check (guardrails)
 
 ```
 ======================================================================
 STAGE 4: CHECK (GUARDRAILS)
 ======================================================================
 
-Validating 3 analyses against guardrails...
-  → queue-service-mno345
-      Rec 1: ⚠ Escalated: Confidence 0.72 requires escalation
-      Rec 2: ⚠ Escalated: Confidence 0.64 requires escalation
-      Rec 3: ⚠ Escalated: Confidence 0.68 requires escalation
+Validating 8 analyses against guardrails...
   → scenario10-malware-deployment-57db4df9f4-p8h7h
       Rec 1: ✓ Approved (0.89 confidence)
       Rec 2: ✓ Approved (0.87 confidence)
       Rec 3: ✓ Approved (0.85 confidence)
       Rec 4: ⚠ Escalated: Confidence 0.83 requires escalation
+  → db-service-ghi789
+      Rec 1: ⚠ Escalated: Confidence 0.77 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.75 requires escalation
+      Rec 3: ⚠ Escalated: Confidence 0.73 requires escalation
+      Rec 4: ⚠ Escalated: Confidence 0.71 requires escalation
+  → frontend-v1-abc123
+      Rec 1: ⚠ Escalated: Confidence 0.71 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.69 requires escalation
+      Rec 3: ⚠ Escalated: Confidence 0.73 requires escalation
+  → gateway-stu901
+      Rec 1: ⚠ Escalated: Confidence 0.83 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.81 requires escalation
+      Rec 3: ✓ Approved (0.85 confidence)
+      Rec 4: ⚠ Escalated: Confidence 0.83 requires escalation
   → worker-pqr678
-      Rec 1: ⚠ Escalated: Confidence 0.67 requires escalation
-      Rec 2: ⚠ Escalated: Confidence 0.65 requires escalation
+      Rec 1: ⚠ Escalated: Confidence 0.77 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.73 requires escalation
+      Rec 3: ⚠ Escalated: Confidence 0.71 requires escalation
+  → cache-layer-jkl012
+      Rec 1: ⚠ Escalated: Confidence 0.72 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.70 requires escalation
+      Rec 3: ⚠ Escalated: Confidence 0.68 requires escalation
+  → queue-service-mno345
+      Rec 1: ⚠ Escalated: Confidence 0.71 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.75 requires escalation
+      Rec 3: ⚠ Escalated: Confidence 0.73 requires escalation
+      Rec 4: ⚠ Escalated: Confidence 0.71 requires escalation
+  → api-server-def456
+      Rec 1: ⚠ Escalated: Confidence 0.73 requires escalation
+      Rec 2: ⚠ Escalated: Confidence 0.71 requires escalation
       Rec 3: ⚠ Escalated: Confidence 0.69 requires escalation
-      Rec 4: ⚠ Escalated: Confidence 0.67 requires escalation
 
 ──────────────────────────────────────────────────────────────────────
 GUARDRAIL SUMMARY
 ──────────────────────────────────────────────────────────────────────
-Approved actions:       3
-Escalated actions:      8
+Approved actions:       4
+Escalated actions:      24
 Rejected actions:       0
 
 Approved:
   - scenario10-malware-deployment-57db4df9f4-p8h7h: scale_up (0.89)
   - scenario10-malware-deployment-57db4df9f4-p8h7h: restart (0.87)
   - scenario10-malware-deployment-57db4df9f4-p8h7h: trigger_profiling (0.85)
+  - gateway-stu901: trigger_profiling (0.85)
 
 Escalated:
-  - queue-service-mno345: scale_up
-  - queue-service-mno345: collect_logs
-  - queue-service-mno345: trigger_profiling
-  - scenario10-malware-deployment-57db4df9f4-p8h7h: trigger_profiling
-  - worker-pqr678: restart_with_debug
+  - scenario10-malware-deployment-57db4df9f4-p8h7h: trigger_profiling (Confidence 0.83 requires escalation)
+  - db-service-ghi789: scale_up (Confidence 0.77 requires escalation)
+  - db-service-ghi789: restart (Confidence 0.75 requires escalation)
+  - db-service-ghi789: trigger_profiling (Confidence 0.73 requires escalation)
+  - db-service-ghi789: trigger_profiling (Confidence 0.71 requires escalation)
+  ... and 19 more
 ```
 
-**What to check:** Only the malware-deployment pod generates high enough confidence (0.85+) for auto-approval. The 3 approved actions are `scale_up`, `restart`, and `trigger_profiling` for that pod. The remaining 8 actions across all 3 pods are escalated to human review. No actions are rejected, meaning all are above the 0.60 minimum confidence threshold.
-
-### Stage 5: Act
-
-The act stage simulates execution of the 3 approved actions. Duration values are randomized, so your exact seconds will vary.
-
-**Expected output:**
+#### Stage 5: Act (simulated)
 
 ```
 ======================================================================
 STAGE 5: ACT
 ======================================================================
 
-Executing 3 approved actions...
-  → scenario10-malware-deployment-57db4df9f4-p8h7h: scale_up... ✓ (20s)
-  → scenario10-malware-deployment-57db4df9f4-p8h7h: restart... ✓ (23s)
-  → scenario10-malware-deployment-57db4df9f4-p8h7h: trigger_profiling... ✓ (20s)
+Executing 4 approved actions (simulated)...
+  → scenario10-malware-deployment-57db4df9f4-p8h7h: scale_up... ✓ (26s)
+  → scenario10-malware-deployment-57db4df9f4-p8h7h: restart... ✓ (11s)
+  → scenario10-malware-deployment-57db4df9f4-p8h7h: trigger_profiling... ✓ (12s)
+  → gateway-stu901: trigger_profiling...2026-10-26 17:05:39,940 - __main__ - INFO - Pipeline execution completed successfully
+ ✓ (6s)
 
 ──────────────────────────────────────────────────────────────────────
 EXECUTION SUMMARY
 ──────────────────────────────────────────────────────────────────────
-Actions executed:       3
-Affected pods:          1
+Actions executed:       4
+Affected pods:          2
 Actions by type:
   - restart: 1
   - scale_up: 1
-  - trigger_profiling: 1
-Actions escalated:      8
+  - trigger_profiling: 2
+Actions escalated:      24
 Actions rejected:       0
 ```
 
-**What to check:** Exactly 3 actions should execute successfully (all targeting the malware-deployment pod). Each should show `✓` with a simulated duration (5-30 seconds, randomized). The summary should reflect 1 affected pod, 3 executed, 8 escalated, 0 rejected.
-
-### Stage 6: Observe
-
-The observe stage generates a JSON report and a text dashboard, writing both to the `output/` directory.
-
-**Expected output:**
+#### Stage 6: Observe
 
 ```
 ======================================================================
@@ -382,6 +371,7 @@ STAGE 6: OBSERVE
 Generating observability report...
   ✓ JSON report: output/observability_report.json
   ✓ Text dashboard: output/observability_dashboard.txt
+
 
 ======================================================================
 OBSERVABILITY DASHBOARD
@@ -394,25 +384,25 @@ Pipeline Configuration:
 
 ──────────────────────────────────────────────────────────────────────
 Processing Summary:
-  Anomalies detected:     386
-  Affected pods:          3
-  Analyses generated:     3
+  Anomalies detected:     446
+  Affected pods:          8
+  Analyses generated:     8
 
 ──────────────────────────────────────────────────────────────────────
 Actions Taken:
-  ✓ Executed:             3
-  ⚠ Escalated:            8
+  ✓ Executed:             4
+  ⚠ Escalated:            24
   ✗ Rejected:             0
-  Pods affected:          1
+  Pods affected:          2
 
   Actions by type:
     - restart                  :   1 actions (avg confidence: 0.87)
     - scale_up                 :   1 actions (avg confidence: 0.89)
-    - trigger_profiling        :   1 actions (avg confidence: 0.85)
+    - trigger_profiling        :   2 actions (avg confidence: 0.85)
 
 ──────────────────────────────────────────────────────────────────────
 Confidence Distribution:
-  Very High (≥0.85):         3 actions
+  Very High (≥0.85):         4 actions
   High (0.75-0.85):          0 actions
   Medium (0.60-0.75):        0 actions
   Low (0.40-0.60):           0 actions
@@ -420,179 +410,169 @@ Confidence Distribution:
 
 ──────────────────────────────────────────────────────────────────────
 Root Causes Identified:
-  - Unknown                                 :   3 occurrences
+  - Unknown                                 :   8 occurrences
 
 ──────────────────────────────────────────────────────────────────────
 Top Anomalous Features:
-  - metric_rate_storage_iops_max                      :   10 times
-  - metric_rate_transmitted_packets_p95               :    9 times
-  - metric_memory_usage_mean                          :    8 times
-  - metric_rate_storage_iops_std                      :    8 times
-  - log_golden_std                                    :    8 times
-  - metric_rate_received_packets_max                  :    8 times
-  - log_frequency_std                                 :    8 times
-  - metric_rate_transmitted_packets_mean              :    7 times
-  - metric_rate_received_packets_p50                  :    7 times
-  - metric_transmit_bandwidth_p99                     :    7 times
+  - metric_rate_storage_iops_max                      :   12 times
+  - metric_rate_received_packets_p50                  :   11 times
+  - log_frequency_min                                 :   11 times
+  - metric_memory_usage_mean                          :    9 times
+  - metric_rate_storage_iops_std                      :    9 times
+  - metric_rate_storage_iops_p99                      :    9 times
+  - metric_memory_usage_std                           :    9 times
+  - log_golden_mean                                   :    9 times
+  - metric_memory_usage_p50                           :    9 times
+  - metric_rate_transmitted_packets_p50               :    9 times
 
-======================================================================
-```
-
-**What to check:** Two output files should be created in `output/`. The dashboard shows that storage IOPS, transmitted packets, and memory usage are the top anomalous features -- consistent with the malware injection scenario in the LEMMA-RCA dataset. Root causes show "Unknown" because rule-based analysis does not classify root causes (LLM mode would populate this with specific diagnoses). All 3 executed actions have "Very High" confidence (>= 0.85).
-
-### Pipeline Timing Summary
-
-After all six stages complete, the pipeline prints a timing summary:
-
-```
-======================================================================
-PIPELINE TIMING SUMMARY
-======================================================================
-Stage 1 (Ingest):          0.0s
-Stage 2 (Fuse):            0.2s
-Stage 3 (Plan):            0.0s
-Stage 4 (Check):           0.0s
-Stage 5 (Act):             0.0s
-Stage 6 (Observe):         0.0s
 ──────────────────────────────────────────────────────────────────────
-Total:                     0.2s
+Most Anomalous Pods:
+  - scenario10-malware-deployment-57db4df9f4-p8h7h    :    315 anomalies
+  - db-service-ghi789                                 :     26 anomalies
+  - frontend-v1-abc123                                :     22 anomalies
+  - gateway-stu901                                    :     19 anomalies
+  - worker-pqr678                                     :     18 anomalies
+
+──────────────────────────────────────────────────────────────────────
+Incident (from the KPI):
+  step 3600 to step 4800 (5 windows, KPI 0.598; 1 period(s) below 0.8)
+
+──────────────────────────────────────────────────────────────────────
+Evaluation Against the Fault Label:
+  Root cause pod:         scenario10-malware-deployment-57db4df9f4-p8h7h
+  Its rank:               1 of 8 pods (top 1: yes, top 3: yes)
+  Actions on it:          yes (24 actions on other pods)
+  Time:                   not scored (the sample has no clock: its label time cannot be compared with the data)
 
 ======================================================================
-PIPELINE EXECUTION COMPLETE
-======================================================================
-Case:           20240115
-Total time:     0.2 seconds
-Finished:       <your-run-timestamp>
-======================================================================
 ```
 
-**What to check:** The entire pipeline should complete in under 1 second. The Fuse stage is the most computationally expensive due to windowed aggregation across all pods and metrics. If your run takes significantly longer, check that the data was loaded correctly and no warnings were printed during ingestion.
+### A real case: LEMMA-RCA 20240115 (malware → bot pods → DDoS)
 
-### Output Files
-
-After the pipeline completes, check the `output/` directory:
+The case: a malware-infected pod logs into about 30 other pods. They become bots and flood the `productpage` web server, and its error rate rises. From `python run_pipeline.py --case 20240115`, same machine and date:
 
 ```
-output/
-├── observability_report.json    # Machine-readable JSON report
-└── observability_dashboard.txt  # Human-readable text dashboard
+Looking for the incident in the KPI...
+  ✓ 3 period(s) with the KPI below 0.99; analysing the largest:
+    2024-01-14 07:25 UTC to 2024-01-15 01:35 UTC (219 windows; KPI 1.000 before, 0.388 during)
+
+Computing baselines per pod from 289 of 544 windows (normal windows before the incident)...
+  ✓ Baseline stats computed for 63 features × 257 pods
+
+Detecting anomalies in 219 windows...
+  ✓ 660831 anomalies detected
+
+  Affected pods: 257
+      9650  productpage-v1-94d68db49-jjkdt
+      9191  scenario10-bot-deployment-69bbf69f44-bhfd5
+      9186  scenario10-bot-deployment-69bbf69f44-c2fz7
+      9156  scenario10-bot-deployment-69bbf69f44-ccqk2
+      9150  scenario10-bot-deployment-69bbf69f44-dk25p
+
+Generating analyses and recommendations (top 10 pods)...
+  → productpage-v1-94d68db49-jjkdt: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-bhfd5: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-c2fz7: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-ccqk2: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-dk25p: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-dsd4c: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-f62hr: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-f9wvp: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-f9xsl: Using rule-based analysis... ✓
+  → scenario10-bot-deployment-69bbf69f44-gspdw: Using rule-based analysis... ✓
+
+──────────────────────────────────────────────────────────────────────
+PLANNING SUMMARY
+──────────────────────────────────────────────────────────────────────
+Anomalies detected:     660831
+Affected pods:          257
+Analyses generated:     10
+Avg anomalies/pod:      2571.3
+LLM analysis:           ✗ Disabled
 ```
 
-The JSON report contains structured data including anomaly counts, action summaries by type with average confidence, confidence distribution buckets, root cause tallies, and the top 10 most frequent anomalous features.
-
-## Project Structure
-
 ```
-streamkit-ops-playbook/
-├── README.md                    # This file
-├── requirements.txt             # Python dependencies
-├── download_data.py             # Download LEMMA-RCA dataset from HuggingFace
-├── run_pipeline.py              # End-to-end pipeline orchestrator
-├── config/
-│   └── pipeline_config.yaml     # Pipeline configuration
-├── pipeline/
-│   ├── __init__.py
-│   ├── ingest.py               # Stage 1: Load and validate data
-│   ├── fuse.py                 # Stage 2: Align metrics and logs
-│   ├── plan.py                 # Stage 3: Anomaly detection and analysis
-│   ├── check.py                # Stage 4: Guardrails and validation
-│   ├── act.py                  # Stage 5: Action execution simulation
-│   └── observe.py              # Stage 6: Observability and reporting
-├── output/                      # Generated reports (created by pipeline)
-│   ├── observability_report.json
-│   └── observability_dashboard.txt
-└── data/                        # Dataset directory (created by download_data.py)
-    └── {case}/                  # Data for specific case
-        ├── pod_level_data_*.npy # Per-metric time series (7 files)
-        ├── pod_level_log_*.npy  # Log signal arrays (2 files)
-        ├── kpi.csv              # Service-level KPI data
-        └── fault_labels.json    # Injected fault metadata
-```
+GUARDRAIL SUMMARY
+──────────────────────────────────────────────────────────────────────
+Approved actions:       20
+Escalated actions:      10
+Rejected actions:       0
 
-## Data Format
+Approved:
+  - productpage-v1-94d68db49-jjkdt: scale_up (0.89)
+  - productpage-v1-94d68db49-jjkdt: restart (0.87)
+  - productpage-v1-94d68db49-jjkdt: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-bhfd5: scale_up (0.89)
+  - scenario10-bot-deployment-69bbf69f44-bhfd5: restart (0.87)
+  - scenario10-bot-deployment-69bbf69f44-bhfd5: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-c2fz7: scale_up (0.89)
+  - scenario10-bot-deployment-69bbf69f44-c2fz7: restart (0.87)
+  - scenario10-bot-deployment-69bbf69f44-c2fz7: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-ccqk2: scale_up (0.89)
+  - scenario10-bot-deployment-69bbf69f44-ccqk2: restart (0.87)
+  - scenario10-bot-deployment-69bbf69f44-ccqk2: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-dk25p: scale_up (0.89)
+  - scenario10-bot-deployment-69bbf69f44-dk25p: restart (0.87)
+  - scenario10-bot-deployment-69bbf69f44-dk25p: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-dsd4c: scale_up (0.89)
+  - scenario10-bot-deployment-69bbf69f44-dsd4c: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-f62hr: scale_up (0.89)
+  - scenario10-bot-deployment-69bbf69f44-f62hr: trigger_profiling (0.85)
+  - scenario10-bot-deployment-69bbf69f44-f9wvp: scale_up (0.89)
 
-The LEMMA-RCA dataset includes:
-
-- **Metrics** (`.npy` arrays): Time-series data for 7 metrics -- CPU usage, memory usage, rate of received/transmitted packets, storage IOPS, and received/transmit bandwidth. Each file contains a dictionary keyed by service label (e.g., `book_info`), with `Pod_Name`, `Sequence` (numpy 2D array: timestamps x pods), and `KPI_Feature` fields.
-- **Logs** (`.npy` arrays): Golden signal logs and log frequency data from Kubernetes pods, structured identically to metrics but using `Node_Name` instead of `Pod_Name`.
-- **KPI** (`kpi.csv`): Service-level health indicators with 5000 rows and 2 columns.
-- **Fault Labels** (`fault_labels.json`): Metadata about injected faults for the scenario, including timestamps and root cause identifiers.
-
-## Configuration
-
-Key configuration parameters in `pipeline_config.yaml`:
-
-```yaml
-case: 20240115                           # Dataset case ID
-label: book_info                         # Service label
-data_path: data/20240115/               # Data directory
-metrics:                                # Metrics to analyze
-  - cpu_usage
-  - memory_usage
-  - rate_received_packets
-  - rate_transmitted_packets
-  - rate_storage_iops
-  - received_bandwidth
-  - transmit_bandwidth
-thresholds:
-  std_multiplier: 2.0                  # Std dev for anomaly detection
-  confidence_high: 0.85                # High confidence threshold
-  confidence_medium: 0.6               # Medium confidence threshold
-guardrails:
-  max_replica_scale: 10               # Max pods in scale action
-  max_rollback_rate: 5                # Max rollbacks per minute
-allowed_actions:                        # Approved remediation actions
-  - scale_up
-  - scale_down
-  - restart
-  - restart_with_debug
-  - collect_logs
+Escalated:
+  - scenario10-bot-deployment-69bbf69f44-dsd4c: restart (Rollback rate limit: 5 restarts/minute exceeded)
+  - scenario10-bot-deployment-69bbf69f44-f62hr: restart (Rollback rate limit: 5 restarts/minute exceeded)
+  - scenario10-bot-deployment-69bbf69f44-f9wvp: restart (Rate limit: 20 actions/minute exceeded)
+  - scenario10-bot-deployment-69bbf69f44-f9wvp: trigger_profiling (Rate limit: 20 actions/minute exceeded)
+  - scenario10-bot-deployment-69bbf69f44-f9xsl: scale_up (Rate limit: 20 actions/minute exceeded)
+  ... and 5 more
 ```
 
-## LLM Integration (Optional)
+```
+Most Anomalous Pods:
+  - productpage-v1-94d68db49-jjkdt                    :   9650 anomalies
+  - scenario10-bot-deployment-69bbf69f44-bhfd5        :   9191 anomalies
+  - scenario10-bot-deployment-69bbf69f44-c2fz7        :   9186 anomalies
+  - scenario10-bot-deployment-69bbf69f44-ccqk2        :   9156 anomalies
+  - scenario10-bot-deployment-69bbf69f44-dk25p        :   9150 anomalies
 
-For intelligent analysis with any OpenAI-compatible LLM, set your API key and base URL:
+──────────────────────────────────────────────────────────────────────
+Incident (from the KPI):
+  2024-01-14 07:25 UTC to 2024-01-15 01:35 UTC (219 windows, KPI 0.388; 3 period(s) below 0.99)
 
-```bash
-export LLM_API_KEY="your-api-key"
-export LLM_BASE_URL="https://api.your-provider.com/v1"  # optional, defaults to OpenAI
-export LLM_MODEL="gpt-4o"  # optional, defaults to gpt-4o
-python run_pipeline.py
+──────────────────────────────────────────────────────────────────────
+Evaluation Against the Fault Label:
+  Root cause pod:         scenario10-malware-deployment-57db4df9f4-p8h7h
+  Its rank:               80 of 257 pods (top 1: no, top 3: no)
+  Actions on it:          no (30 actions on other pods)
+  Labelled failure:       2024-01-14T07:26:39Z
+  KPI incident start:     -1.6 min from the label
+  First anomaly on it:    -1.6 min from the label
 ```
 
-The pipeline will use the LLM for reasoning about root causes and generating contextual recommendations. Without the API key, the pipeline uses rule-based analysis. This works with any provider that exposes an OpenAI-compatible chat completions endpoint.
+What this shows:
 
-## Understanding the Output
+- **The KPI finds the incident without the label.** The largest period with more than 1% errors starts 1.6 minutes before the labelled failure (the first HTTP 503). Two smaller periods are reported too: an unlabelled one on 13 January, and one near the end of the recording.
+- **The root cause is not found.** The z-score ranking puts the victim (`productpage-v1`) and the bot pods on top, and the malware pod ranks 80th. That is the difficulty the case was built for: its README notes that "the large number of cascading login attempts makes it difficult to locate the container of the original source of infection".
+- **Every pod is affected.** All 257 pods cross 2 σ at least once in 219 windows, so the ranking matters, not the count.
+- **The guardrails bound the damage.** The rules would restart and scale the victim and the bots. The restart limit and the rate limit stop at 5 restarts and 20 actions; 10 more are escalated to a person.
 
-The pipeline generates:
+### A case whose root cause is not a pod: LEMMA-RCA 20240207
 
-1. **Console Output**: Stage-by-stage progress with checkmarks (✓/✗/⚠), summaries, and a final timing breakdown
-2. **JSON Report** (`output/observability_report.json`): Machine-readable report with anomaly counts, action breakdowns, confidence distribution, root causes, and top anomalous features
-3. **Text Dashboard** (`output/observability_dashboard.txt`): Human-readable formatted dashboard summarizing the full pipeline run
+A `git push` deployed wrong resource limits. From `python run_pipeline.py --case 20240207`:
 
-Key metrics in the observability report:
-- Total anomalies detected and affected pods
-- Actions executed, escalated, and rejected (with per-type breakdown and average confidence)
-- Confidence distribution across 5 buckets (very low through very high)
-- Root causes identified (populated when LLM is enabled, otherwise "Unknown")
-- Top 10 most frequently anomalous features
+```
+Looking for the incident in the KPI...
+  ✓ 1 period(s) with the KPI below 0.99; analysing the largest:
+    2024-02-06 05:17 UTC to 2024-02-07 04:57 UTC (285 windows; KPI 1.000 before, 0.439 during)
 
-## References
-
-- **Dataset**: LEMMA-RCA dataset from HuggingFace (Lemma-RCA-NEC/Cloud_Computing_Preprocessed)
-- **Paper**: See the LEMMA-RCA baseline repository for dataset documentation
-- **Chapter**: Chapter 12, "Data Engineering for Multimodal AI"
+Evaluation Against the Fault Label:
+  Root cause:             git user pushing manifest file with incorrect resource limits (not a pod: no ranking to score)
+  Labelled failure:       2024-02-06T05:20:41Z
+  KPI incident start:     -3.7 min from the label
+```
 
 ## License
 
-This code is provided as-is for educational and operational use.
-
-## Copyright
-
-Copyright (c) 2025 Data Engineering for Multimodal AI
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+MIT; see [LICENSE](LICENSE). LEMMA-RCA data is CC BY-NC 4.0 and is downloaded, not included.
