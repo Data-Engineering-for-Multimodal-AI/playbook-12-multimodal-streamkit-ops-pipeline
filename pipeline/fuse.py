@@ -4,6 +4,9 @@ Stage 2: Fuse
 Aligns metrics and logs by pod name and time window into unified feature space.
 Creates fused DataFrame where each row represents (pod, time_window) with all
 available metric and log features.
+
+Windows are cut on the time axis (seconds), so modalities sampled at different rates or over
+different spans line up. Each sample belongs to exactly one window.
 """
 
 import logging
@@ -13,6 +16,9 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_AGGREGATIONS = ['mean', 'std', 'min', 'max', 'p50', 'p95', 'p99']
+ID_COLUMNS = ['pod', 'window_start', 'window_end', 'window_id']
 
 
 def get_common_pods(data_dict: Dict[str, Any]) -> set:
@@ -25,60 +31,48 @@ def get_common_pods(data_dict: Dict[str, Any]) -> set:
     Returns:
         Set of common pod names
     """
-    pod_sets = []
+    pod_sets = [set(df.columns) for df in data_dict['metrics'].values()]
+    for key in ('logs_golden', 'logs_frequency'):
+        if not data_dict[key].empty:
+            pod_sets.append(set(data_dict[key].columns))
+    return set.intersection(*pod_sets) if pod_sets else set()
 
-    # Collect pods from metrics
-    for metric_name, metric_df in data_dict['metrics'].items():
-        pod_sets.append(set(metric_df.columns))
 
-    # Collect pods from logs
-    if not data_dict['logs_golden'].empty:
-        pod_sets.append(set(data_dict['logs_golden'].columns))
-
-    if not data_dict['logs_frequency'].empty:
-        pod_sets.append(set(data_dict['logs_frequency'].columns))
-
-    # Find intersection
-    if not pod_sets:
-        return set()
-
-    common_pods = pod_sets[0]
-    for pod_set in pod_sets[1:]:
-        common_pods = common_pods.intersection(pod_set)
-
-    return common_pods
+def get_all_pods(data_dict: Dict[str, Any]) -> set:
+    """Pods with at least one metric (features a pod doesn't have stay empty)"""
+    return set().union(*(df.columns for df in data_dict['metrics'].values()))
 
 
 def create_time_windows(
-    num_timestamps: int,
+    start: int,
+    end: int,
     window_size: int = 300,
     stride: Optional[int] = None,
 ) -> list[tuple[int, int]]:
     """
-    Create time windows for aggregation.
+    Create time windows [start, end) for aggregation.
 
     Args:
-        num_timestamps: Total number of timestamps
-        window_size: Size of each window (in timestamps)
+        start: First timestamp (seconds)
+        end: Last timestamp (seconds, inclusive)
+        window_size: Size of each window (in seconds)
         stride: Stride between windows (default: window_size)
 
     Returns:
-        List of (start_idx, end_idx) tuples
+        List of (window_start, window_end) tuples; window_end is exclusive
     """
     if stride is None:
         stride = window_size
 
     windows = []
-    start = 0
-
-    while start + window_size <= num_timestamps:
-        end = start + window_size
-        windows.append((start, end))
-        start += stride
+    t = start
+    while t + window_size <= end + 1:
+        windows.append((t, t + window_size))
+        t += stride
 
     # Add final partial window if it exists and is at least half window size
-    if start < num_timestamps and num_timestamps - start >= window_size // 2:
-        windows.append((start, num_timestamps))
+    if t <= end and end + 1 - t >= window_size // 2:
+        windows.append((t, end + 1))
 
     return windows
 
@@ -98,38 +92,57 @@ def aggregate_window(
         Dictionary of aggregation results
     """
     if aggregations is None:
-        aggregations = ['mean', 'std', 'min', 'max', 'p50', 'p95', 'p99']
-
-    # Remove NaN/inf values
-    data_clean = data[np.isfinite(data)]
-
+        aggregations = DEFAULT_AGGREGATIONS
+    data_clean = np.asarray(data, dtype=float)
+    data_clean = data_clean[np.isfinite(data_clean)]
     if len(data_clean) == 0:
         return {agg: np.nan for agg in aggregations}
+    functions = {'mean': np.mean, 'std': np.std, 'min': np.min, 'max': np.max,
+                 'p50': lambda x: np.percentile(x, 50), 'p95': lambda x: np.percentile(x, 95),
+                 'p99': lambda x: np.percentile(x, 99)}
+    return {agg: float(functions[agg](data_clean)) for agg in aggregations}
 
-    results = {}
 
+def aggregate_frame(df: pd.DataFrame, windows: list[tuple[int, int]], prefix: str,
+                    aggregations: list[str]) -> pd.DataFrame:
+    """Aggregate a (time × pods) frame per window: rows (window_start, pod), columns prefix_agg"""
+    starts = np.array([w[0] for w in windows])
+    ends = np.array([w[1] for w in windows])
+    times = df.index.to_numpy()
+    position = np.searchsorted(starts, times, side='right') - 1
+    inside = (position >= 0) & (times < ends[np.clip(position, 0, None)])
+    df = df[inside].replace([np.inf, -np.inf], np.nan)
+    group = pd.Index(starts[position[inside]], name='window_start')
+    grouped = df.groupby(group)
+
+    parts = {}
     for agg in aggregations:
-        if agg == 'mean':
-            results[agg] = np.mean(data_clean)
-        elif agg == 'std':
-            results[agg] = np.std(data_clean)
-        elif agg == 'min':
-            results[agg] = np.min(data_clean)
-        elif agg == 'max':
-            results[agg] = np.max(data_clean)
-        elif agg == 'p50':
-            results[agg] = np.percentile(data_clean, 50)
-        elif agg == 'p95':
-            results[agg] = np.percentile(data_clean, 95)
-        elif agg == 'p99':
-            results[agg] = np.percentile(data_clean, 99)
+        if agg in ('mean', 'std', 'min', 'max'):
+            values = getattr(grouped, agg)(ddof=0) if agg == 'std' else getattr(grouped, agg)()
+        else:
+            values = grouped.quantile(int(agg[1:]) / 100)
+        parts[f"{prefix}_{agg}"] = values.stack(future_stack=True)
+    out = pd.DataFrame(parts)
+    out.index.names = ['window_start', 'pod']
+    return out
 
-    return results
+
+def window_kpi(kpi: pd.DataFrame, windows: list[tuple[int, int]]) -> pd.DataFrame:
+    """KPI per window (mean of each KPI column), indexed by window_start"""
+    if kpi is None or kpi.empty:
+        return pd.DataFrame()
+    starts = np.array([w[0] for w in windows])
+    ends = np.array([w[1] for w in windows])
+    times = kpi.index.to_numpy()
+    position = np.searchsorted(starts, times, side='right') - 1
+    inside = (position >= 0) & (times < ends[np.clip(position, 0, None)])
+    numeric = kpi[inside].select_dtypes('number')
+    return numeric.groupby(pd.Index(starts[position[inside]], name='window_start')).mean()
 
 
 def fuse_modalities(
     data_dict: Dict[str, Any],
-    window_size: int = 300,
+    window_size: Optional[int] = None,
     aggregations: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
@@ -139,93 +152,68 @@ def fuse_modalities(
 
     Args:
         data_dict: Data dictionary from ingest stage
-        window_size: Size of time window (in timestamps)
-        aggregations: List of aggregation functions (default: mean, std, min, max, p50, p95, p99)
+        window_size: Size of time window in seconds (default: config feature_engineering.window_size)
+        aggregations: List of aggregation functions (default: config feature_engineering.aggregation)
 
     Returns:
-        Fused DataFrame with columns: pod, window_start, window_end, {modality}_{feature}_{agg}
+        Fused DataFrame with columns: pod, window_start, window_end, window_id, {modality}_{feature}_{agg}.
+        fused_df.attrs carries the KPI per window, the fault labels and the window size.
     """
     print("\n" + "="*70)
     print("STAGE 2: FUSE")
     print("="*70)
 
-    if aggregations is None:
-        aggregations = ['mean', 'std', 'min', 'max', 'p50', 'p95', 'p99']
+    features = data_dict.get('config', {}).get('feature_engineering', {})
+    window_size = int(window_size or features.get('window_size', 300))
+    aggregations = aggregations or features.get('aggregation') or DEFAULT_AGGREGATIONS
 
-    # Get common pods
     common_pods = get_common_pods(data_dict)
+    pods = get_all_pods(data_dict)
     print(f"\nCommon pods across all modalities: {len(common_pods)}")
-    if len(common_pods) == 0:
-        print("  Warning: No common pods found. Creating union of all pods.")
-        common_pods = set()
-        for metric_df in data_dict['metrics'].values():
-            common_pods.update(metric_df.columns)
+    print(f"Pods with metrics: {len(pods)}")
 
-    # Get number of timestamps
-    first_metric = next(iter(data_dict['metrics'].values()))
-    num_timestamps = first_metric.shape[0]
-    print(f"Total timestamps: {num_timestamps}")
+    # One time grid for every modality
+    frames = list(data_dict['metrics'].values()) + [data_dict[k] for k in ('logs_golden', 'logs_frequency')
+                                                    if not data_dict[k].empty]
+    start = int(min(df.index.min() for df in frames))
+    end = int(max(df.index.max() for df in data_dict['metrics'].values()))
+    windows = create_time_windows(start, end, window_size)
+    print(f"Time span: {end - start + 1} seconds")
+    print(f"Time windows created: {len(windows)} windows of {window_size} s")
 
-    # Create time windows
-    windows = create_time_windows(num_timestamps, window_size)
-    print(f"Time windows created: {len(windows)} windows of size {window_size}")
+    parts = [aggregate_frame(df, windows, f"metric_{name}", aggregations)
+             for name, df in data_dict['metrics'].items()]
+    for key, prefix in (('logs_golden', 'log_golden'), ('logs_frequency', 'log_frequency')):
+        if not data_dict[key].empty:
+            logs = data_dict[key][[p for p in data_dict[key].columns if p in pods]]
+            parts.append(aggregate_frame(logs, windows, prefix, aggregations))
 
-    # Build fused data
-    fused_rows = []
+    # Every (window, pod) row, with the features that pod has
+    grid = pd.MultiIndex.from_product([[w[0] for w in windows], sorted(pods)], names=['window_start', 'pod'])
+    fused_df = pd.concat(parts, axis=1).reindex(grid).reset_index()
+    window_end = dict(windows)
+    fused_df.insert(2, 'window_end', fused_df['window_start'].map(window_end))
+    window_number = {w[0]: i for i, w in enumerate(windows)}
+    fused_df.insert(3, 'window_id', fused_df['pod'] + '_' + fused_df['window_start'].map(window_number).astype(str))
+    fused_df = fused_df[['pod', 'window_start', 'window_end', 'window_id'] +
+                        [c for c in fused_df.columns if c not in ID_COLUMNS]]
 
-    for pod_name in sorted(common_pods):
-        print(f"\nProcessing pod: {pod_name}")
+    fused_df.attrs.update({
+        'window_size': window_size,
+        'kpi_windows': window_kpi(data_dict.get('kpi'), windows),
+        'fault_labels': data_dict.get('fault_labels', {}),
+        'data_source': data_dict.get('config', {}).get('data_source', 'sample'),
+    })
 
-        for window_idx, (start_idx, end_idx) in enumerate(windows):
-            row = {
-                'pod': pod_name,
-                'window_start': start_idx,
-                'window_end': end_idx,
-                'window_id': f"{pod_name}_{window_idx}",
-            }
-
-            # Add metric features
-            for metric_name, metric_df in data_dict['metrics'].items():
-                if pod_name in metric_df.columns:
-                    window_data = metric_df.loc[start_idx:end_idx, pod_name].values
-
-                    agg_results = aggregate_window(window_data, aggregations)
-                    for agg_name, agg_value in agg_results.items():
-                        col_name = f"metric_{metric_name}_{agg_name}"
-                        row[col_name] = agg_value
-
-            # Add log features
-            if not data_dict['logs_golden'].empty and pod_name in data_dict['logs_golden'].columns:
-                window_data = data_dict['logs_golden'].loc[start_idx:end_idx, pod_name].values
-
-                agg_results = aggregate_window(window_data, aggregations)
-                for agg_name, agg_value in agg_results.items():
-                    col_name = f"log_golden_{agg_name}"
-                    row[col_name] = agg_value
-
-            if not data_dict['logs_frequency'].empty and pod_name in data_dict['logs_frequency'].columns:
-                window_data = data_dict['logs_frequency'].loc[start_idx:end_idx, pod_name].values
-
-                agg_results = aggregate_window(window_data, aggregations)
-                for agg_name, agg_value in agg_results.items():
-                    col_name = f"log_frequency_{agg_name}"
-                    row[col_name] = agg_value
-
-            fused_rows.append(row)
-
-        if len(common_pods) <= 5:
-            print(f"  ✓ {pod_name}: {len(windows)} windows")
-
-    # Create DataFrame
-    fused_df = pd.DataFrame(fused_rows)
-
+    feature_columns = [c for c in fused_df.columns if c not in ID_COLUMNS]
     print(f"\n{'─'*70}")
     print("FUSION SUMMARY")
     print(f"{'─'*70}")
-    print(f"Pods fused:         {len(common_pods)}")
+    print(f"Pods fused:         {len(pods)}")
     print(f"Windows per pod:    {len(windows)}")
     print(f"Total rows:         {len(fused_df)}")
     print(f"Total columns:      {fused_df.shape[1]}")
+    print(f"Empty feature cells: {fused_df[feature_columns].isna().to_numpy().mean():.1%} (metrics a pod doesn't report)")
     print(f"Feature groups:")
     print(f"  - Metrics: {len([c for c in fused_df.columns if c.startswith('metric_')])}")
     print(f"  - Golden logs: {len([c for c in fused_df.columns if c.startswith('log_golden_')])}")
@@ -235,8 +223,7 @@ def fuse_modalities(
 
 
 if __name__ == "__main__":
-    import logging
-    from ingest import load_data
+    from pipeline.ingest import load_data
 
     logging.basicConfig(level=logging.INFO)
 
