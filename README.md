@@ -127,6 +127,7 @@ Each stage also runs on its own from the repository folder, for example `python 
 |---|---|---|---|
 | 2026-10-26 | macOS 26.5.1 (Apple M3) | 3.12.15 and 3.13.16 | `make smoke` (10 tests); the sample; LEMMA-RCA cases 20240115 and 20240207 (output below) |
 | 2026-10-27 | macOS 26.5.1 (Apple M3) | 3.13.16 | All six LEMMA-RCA cases (table above); `make smoke` |
+| 2026-10-27 | Ubuntu (GitHub Actions) | 3.12 | Cases 20231207, 20231221, 20240124, 20240215: same results as the table |
 | 2026-10-26 | Ubuntu (GitHub Actions) | 3.12, 3.13 | `make smoke`, then after `pip install -r requirements.txt`: the sample, and both cases downloaded and run |
 
 Versions are pinned in `uv.lock` and `requirements.txt` (NumPy 2.5, pandas 3.1, huggingface_hub 2.3, openai 3.39).
