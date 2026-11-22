@@ -1,7 +1,11 @@
-# StreamKit Ops Playbook
+# Playbook 12: Find the root cause of failures in a Kubernetes cluster
+**How to build an end-to-end multimodal root cause analysis pipeline.** Chapter 12 of [*Data Engineering for Multimodal AI*](https://oreil.ly/data-engineering-multimodal) (O'Reilly, 2026), pages 494–499.
 
-**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026), pages 494–499.
-Book: https://oreil.ly/data-engineering-multimodal
+When a system breaks, the clues are spread across metrics, logs and alerts, and someone has to put them together to find the cause. The chapter's running example is StreamKit, a fictional contact-center agent framework; in this repo, we apply the same pattern to IT operations with the LEMMA-RCA dataset, a Kubernetes cluster with injected failures. Follow along to build all six stages, from ingesting the signals to acting on the diagnosis and watching the result.
+
+**The problem.** Each stage works in its own chapter, but running all of them together, and moving the design to new data, is a separate problem.
+
+**What you'll work with.** You'll keep each stage isolated, validate data against contracts, align signals by time and session, fuse them, check every action before it runs, and watch each modality in production.
 
 > Want the code exactly as printed? Use the `first-edition` tag. This branch is the 2026 maintenance update; see [Differences from the printed book](#differences-from-the-printed-book).
 

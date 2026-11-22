@@ -13,6 +13,7 @@ Nothing the book shows has changed.
   builds the devcontainer and runs `make run` inside it.
 
 ### Changed
+- README opening: a title that says what you'll do, three sentences on why, the example and what you'll do, then the data engineering problem and what you'll work with.
 - Book page numbers now match the printed book (they were Early Release page numbers).
 - `make run` writes its reports to `output/make-run/` (gitignored). It used to rewrite the committed
   `output/observability_report.json` and `output/observability_dashboard.txt`. `make clean` also
