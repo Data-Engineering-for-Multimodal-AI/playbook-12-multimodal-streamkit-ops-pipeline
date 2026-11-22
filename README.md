@@ -851,6 +851,8 @@ Evaluation Against the Fault Label:
   KPI incident start:     -3.7 min from the label
 ```
 
+If this playbook helped you, a star helps other readers find it.
+
 ## License
 
 MIT; see [LICENSE](LICENSE). LEMMA-RCA data is CC BY-NC 4.0 and is downloaded, not included.
