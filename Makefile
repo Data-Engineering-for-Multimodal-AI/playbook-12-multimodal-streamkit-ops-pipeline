@@ -1,5 +1,8 @@
 .PHONY: setup smoke run data data-20240207 run-lemma run-20240207 clean
 
+# A bare `make` runs the smoke test, as it did before the uniform targets were added.
+.DEFAULT_GOAL := smoke
+
 # Uniform targets for The Playbooks. The book's commands (pip install -r requirements.txt,
 # python download_data.py --case 20240115, python run_pipeline.py) still work as printed.
 # python run_pipeline.py still writes its reports to output/.
