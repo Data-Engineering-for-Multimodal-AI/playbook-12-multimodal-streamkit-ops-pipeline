@@ -255,7 +255,7 @@ This playbook runs offline on recordings, and the act stage only simulates. Befo
 | Where you run it | Cost |
 |---|---|
 | Your machine | $0 with the rule-based analysis (the default): no API keys, no paid services. About 140 MB for the environment; each LEMMA-RCA case adds about 35 MB, plus about 200 MB in the download cache. |
-| A GitHub Codespace (2 cores, 8 GB, the default size; this repo asks for none) | Estimated $0.18 per hour at GitHub's list price (November 2026). A free personal account includes 120 core-hours a month, about 60 hours on this machine. |
+| A GitHub Codespace (2 cores, 8 GB, the default size; this repo asks for none) | Estimated $0.18 per hour at GitHub's list price (November 2026). A free personal account includes 120 core-hours a month, about 60 hours on this machine. In CI, `make run` in a clean devcontainer (the dependencies were installed while the container was created) took 2 s; the whole job took under a minute. |
 | An LLM for the analysis (optional) | Not run for this update. Estimated at most $0.09 per run of case 20240115 with `gpt-4o` and at most $0.06 per run of the sample, at OpenAI's list price of $2.50 per million input tokens and $10.00 per million output tokens ([OpenAI pricing](https://developers.openai.com/api/docs/pricing), November 2026). The run makes one call per analysed pod: 10 calls with 50,409 characters of prompts for case 20240115, and 8 calls with 17,277 characters for the sample, measured by recording the prompts without sending them; at about 4 characters per token that is about 12,600 and 4,300 input tokens, plus at most 500 output tokens per call. |
 
 ## How it works
