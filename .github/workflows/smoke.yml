@@ -4,6 +4,8 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly, Monday 06:00 UTC, so breakage in upstream packages shows up
 
 jobs:
   smoke:
@@ -19,6 +21,21 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.0
       - name: Smoke test (synthetic sample)
         run: make smoke
+      - name: One-command run
+        run: |
+          make run | tee /tmp/run.txt
+          git diff --exit-code   # make run writes to output/make-run/, not the committed output/ files
+          grep -q "Its rank:               1 of 8 pods" /tmp/run.txt
+      - name: Use your own data (file checks)
+        run: uv run --frozen pytest -q tests/test_own_data.py
+      - name: Try this 1-3 on the sample
+        run: |
+          make try-anomaly-threshold | tee /tmp/t1.txt
+          grep -q "1 of 8" /tmp/t1.txt
+          make try-window-size | tee /tmp/t2.txt
+          grep -q "20 min" /tmp/t2.txt
+          make try-auto-approve | tee /tmp/t3.txt
+          grep -q "0.85     4" /tmp/t3.txt
       - name: Cache the LEMMA-RCA downloads
         uses: actions/cache@v6
         with:
@@ -34,6 +51,17 @@ jobs:
           /tmp/pipenv/bin/python download_data.py --case 20240207
           /tmp/pipenv/bin/python run_pipeline.py --case 20240207
           /tmp/pipenv/bin/python download_data.py --list
+      # README "Run it", steps 3-4, and Try this on the downloaded case (downloaded in the step above)
+      - name: Run it, steps 3-4, and Try this on case 20240115
+        run: |
+          make run-lemma | tee /tmp/lemma.txt
+          grep -q "Its rank:               80 of 257 pods" /tmp/lemma.txt
+          make explain POD=scenario10-malware CASE=20240115 | tee /tmp/explain.txt
+          grep -q "rank 80 of 257" /tmp/explain.txt
+          make explain POD=gateway-stu901 | grep -q "rank 4 of 8"
+          CASE=20240115 make try-anomaly-threshold
+          CASE=20240115 make try-window-size
+          CASE=20240115 make try-auto-approve
 
   other-cases:
     # The book's "Extending the Playbook": the other four Cloud Computing cases, without code changes
@@ -54,3 +82,14 @@ jobs:
             uv run python run_pipeline.py --case $case | tee /tmp/run.log
             sed -n '/Evaluation Against the Fault Label/,/^====/p' /tmp/run.log
           done
+
+  devcontainer:
+    # Builds .devcontainer/ the way Codespaces does and runs the playbook inside it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the devcontainer and run the playbook
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: start=$(date +%s) && make run && echo "Time to first output in a clean devcontainer was $(( $(date +%s) - start )) s"

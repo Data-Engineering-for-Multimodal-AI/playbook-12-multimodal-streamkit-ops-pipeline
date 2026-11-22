@@ -14,6 +14,7 @@ Usage:
     python run_pipeline.py                  # Run with default config
     python run_pipeline.py --case 20240115  # A LEMMA-RCA case downloaded with download_data.py
     python run_pipeline.py --config custom_config.yaml
+    python run_pipeline.py --output-dir output/make-run/  # Reports somewhere other than output/
 """
 
 import argparse
@@ -63,6 +64,7 @@ def print_footer(total_time: float, config_case: str):
 def run_pipeline(
     config_path: str = "config/pipeline_config.yaml",
     case: Optional[str] = None,
+    output_dir: Optional[str] = None,
 ) -> int:
     """
     Run the complete StreamKit Ops pipeline.
@@ -70,6 +72,7 @@ def run_pipeline(
     Args:
         config_path: Path to pipeline configuration file
         case: Optional case ID to override config
+        output_dir: Optional folder for the reports (default: output/, as before)
 
     Returns:
         Exit code (0 for success, 1 for failure)
@@ -140,6 +143,7 @@ def run_pipeline(
             execution_log,
             plan_result,
             data_dict['config'],
+            output_dir=output_dir or "output/",
         )
 
         stage6_time = time.time() - stage6_start
@@ -191,6 +195,7 @@ Examples:
   python run_pipeline.py                    # Run with default config
   python run_pipeline.py --case 20240115    # LEMMA-RCA case (python download_data.py --case 20240115)
   python run_pipeline.py --config my_config.yaml
+  python run_pipeline.py --output-dir output/make-run/
         """,
     )
 
@@ -206,6 +211,13 @@ Examples:
         type=str,
         default=None,
         help="LEMMA-RCA case to analyze (download it first with download_data.py); default: the bundled synthetic sample",
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Folder for the reports (default: output/, or output/lemma-rca-<case>/ with --case)",
     )
 
     parser.add_argument(
@@ -228,6 +240,7 @@ Examples:
     exit_code = run_pipeline(
         config_path=args.config,
         case=args.case,
+        output_dir=args.output_dir,
     )
 
     return exit_code

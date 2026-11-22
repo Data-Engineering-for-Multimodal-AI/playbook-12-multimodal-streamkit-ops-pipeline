@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased (v1.1.0)
+
+Nothing the book shows has changed.
+
+### Added
+- `make explain POD=... [CASE=...]`: why a pod ranks where it does, its strongest deviations and
+  what the guardrails did with its actions (`scripts/explain_pod.py`).
+- `make check-data DIR=...` and `make load DIR=...`: check a folder of your own cluster's CSV
+  exports (metrics, KPI, optional logs and fault label), convert it like a LEMMA-RCA case and run
+  the pipeline on it (`scripts/own_cluster.py`, `tests/test_own_data.py`).
+- Three measured experiments: `make try-anomaly-threshold`, `make try-window-size`,
+  `make try-auto-approve` (`experiments/`), on the sample or a downloaded case (`CASE=`).
+- README: numbered Run it steps, time tiers, Try this, Use your own data, What you end up with,
+  Before production, What it costs (with an estimate for the optional LLM).
+- CI: the Run it steps, Try this 1-3 on the sample and on case 20240115, the own-data checks, and
+  the time to first output in a clean devcontainer.
+- `make setup`. `make run` now depends on it.
+- `run_pipeline.py --output-dir DIR`: write the reports to another folder. Without it the reports go
+  to `output/` (or `output/lemma-rca-<case>/` with `--case`), as before.
+- `.devcontainer/` so the repo opens in GitHub Codespaces with dependencies installed.
+- CI: a weekly scheduled run, a `make run` step that checks no tracked file changed, and a job that
+  builds the devcontainer and runs `make run` inside it.
+
+### Changed
+- README: "What you'll build" is now "How it works", and "Quick start" is now "Run it the way the
+  book does", with the same commands.
+- README opening: a title that says what you'll do, three sentences on why, the example and what you'll do, then the data engineering problem and what you'll work with.
+- Book page numbers now match the printed book (they were Early Release page numbers).
+- `make run` writes its reports to `output/make-run/` (gitignored). It used to rewrite the committed
+  `output/observability_report.json` and `output/observability_dashboard.txt`. `make clean` also
+  removes `output/make-run/`. Every `uv run` in the Makefile uses `--frozen`.
+
 ## 2026.10.1 (2026-10-27)
 
 Checked against the book (Early Release, pages 496–500).

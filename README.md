@@ -1,13 +1,266 @@
-# StreamKit Ops Playbook
+# Playbook 12: Find the root cause of failures in a Kubernetes cluster
+**How to build an end-to-end multimodal root cause analysis pipeline.** Chapter 12 of [*Data Engineering for Multimodal AI*](https://oreil.ly/data-engineering-multimodal) (O'Reilly, 2026), pages 494–499.
 
-**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026), pages 496–500 (Early Release page numbers; they may differ in the final print).
-Book: https://oreil.ly/data-engineering-multimodal
+When a system breaks, the clues are spread across metrics, logs and alerts, and someone has to put them together to find the cause. The chapter's running example is StreamKit, a fictional contact-center agent framework; in this repo, we apply the same pattern to IT operations with the LEMMA-RCA dataset, a Kubernetes cluster with injected failures. Follow along to build all six stages, from ingesting the signals to acting on the diagnosis and watching the result.
 
-> Want the code exactly as printed? Use the `first-edition` tag. This branch is the 2026 maintenance update; see [Differences from the printed book](#differences-from-the-printed-book).
+**The problem.** Each stage works in its own chapter, but running all of them together, and moving the design to new data, is a separate problem.
 
-## What you'll build
+**What you'll work with.** You'll keep each stage isolated, validate data against contracts, align signals by time and session, fuse them, check every action before it runs, and watch each modality in production.
 
-A six-stage multimodal pipeline for IT-operations root cause analysis (RCA). It runs on the LEMMA-RCA cloud dataset: a Kubernetes cluster of about 260 pods, with injected failures.
+> Following the book? Its steps are in [Run it the way the book does](#run-it-the-way-the-book-does) and still work as printed. Want the code exactly as printed? Use the `first-edition` tag. This branch is the 2026 maintenance update; see [Differences from the printed book](#differences-from-the-printed-book).
+
+## Run it
+
+You need [uv](https://docs.astral.sh/uv/) and `make`. No Docker, no API keys: the analysis is rule-based unless you set an LLM key. Or open the repo in a GitHub Codespace, where both are ready. On Windows without `make`, use a Codespace or the book's steps below.
+
+**1. Get the code.**
+
+```bash
+git clone https://github.com/Data-Engineering-for-Multimodal-AI/playbook-12-multimodal-streamkit-ops-pipeline.git
+cd playbook-12-multimodal-streamkit-ops-pipeline
+```
+
+**2. Run the six stages on the bundled sample.** Installs the locked dependencies and runs `python run_pipeline.py` on the synthetic sample in `data/20240115/`. The reports go to `output/make-run/`, so the committed files in `output/` stay as they are. This took 15 s on a Mac, almost all of it loading Python's libraries; the stages themselves took 0.1 s.
+
+```bash
+make run
+```
+
+You should see the six stages, then the dashboard, ending with the score against the fault label:
+
+```
+Evaluation Against the Fault Label:
+  Root cause pod:         scenario10-malware-deployment-57db4df9f4-p8h7h
+  Its rank:               1 of 8 pods (top 1: yes, top 3: yes)
+  Actions on it:          yes (24 actions on other pods)
+```
+
+**3. Run it on a real cluster.** Downloads LEMMA-RCA case 20240115 (`python download_data.py --case 20240115`: a 193 MB download, 35 MB kept) and runs the same stages on its 257 pods (`python run_pipeline.py --case 20240115`). This took 26 s on a Mac.
+
+```bash
+make run-lemma
+```
+
+```
+  Its rank:               80 of 257 pods (top 1: no, top 3: no)
+  Actions on it:          no (30 actions on other pods)
+  Labelled failure:       2024-01-14T07:26:39Z
+  KPI incident start:     -1.6 min from the label
+```
+
+The KPI finds the incident 1.6 minutes before the labelled failure, but the malware pod that caused it ranks 80th: the bots it infected deviate in more features. [Expected output](#expected-output) explains the case.
+
+**4. Ask why a pod ranks where it does.** Prints a pod's rank, its strongest deviations from its own baseline, and what the guardrails did with the actions recommended for it. A name can be the start of a pod name.
+
+```bash
+make explain POD=scenario10-malware CASE=20240115
+```
+
+```
+scenario10-malware-deployment-57db4df9f4-p8h7h: rank 80 of 257, 1619 anomalies, first at 2024-01-14 07:25 UTC
+Ranked above it: productpage-v1-94d68db49-jjkdt (9650), scenario10-bot-deployment-69bbf69f44-bhfd5 (9191), ...
+
+Strongest deviations from its baseline (in standard deviations):
+  window                 feature                                     value   baseline  std devs
+  2024-01-14 07:40 UTC   metric_rate_received_packets_min             3.43    0.00871      23.2
+  2024-01-14 07:35 UTC   metric_received_bandwidth_min                 674       1.73      22.9
+  ...
+Recommended actions: none (only the top pods get recommendations)
+```
+
+The malware pod's network traffic jumped to more than 20 standard deviations above its normal at 07:35, minutes after the failure. The ranking counts anomalies, not their size, so it doesn't see this. Without `CASE=`, it explains a pod of the sample, for example `make explain POD=gateway-stu901`.
+
+**5. Clean up.**
+
+```bash
+make clean
+```
+
+This deletes the downloaded cases (`data/lemma-rca/`), their reports (`output/lemma-rca-*`), the `make run` reports (`output/make-run/`) and the test cache. The sample and the committed `output/` files stay. The download cache in `~/.cache/huggingface` stays too; delete it to free the 193 MB.
+
+## How much time do you have?
+
+| Time | What to do |
+|---|---|
+| 15 minutes | [Run it](#run-it), steps 1 to 4. On a Mac, step 2 took 15 s and step 3 took 26 s. |
+| 1 hour | The three [Try this](#try-this) experiments, on the sample (2 s each) and on case 20240115 (15 to 20 s each), then `make explain` on the pods they point to. |
+| 1 day | [Use your own data](#use-your-own-data) with an export from your own cluster, the other five cases (`python download_data.py --list`), and [Before production](#before-production). |
+
+## Try this
+
+Each experiment changes one setting in `config/pipeline_config.yaml` (in memory; the file isn't changed) and runs the six stages again, rule-based. They run on the sample by default; `CASE=20240115` runs them on the downloaded case. The numbers below are from a Mac on 2026-11-21.
+
+**1. How many standard deviations make an anomaly?** The plan stage flags a value more than 2 standard deviations above its pod's baseline and ranks pods by how many they have. This tries 1.5 to 8.
+
+```bash
+make try-anomaly-threshold
+CASE=20240115 make try-anomaly-threshold
+```
+
+```
+Anomaly threshold on the bundled synthetic sample
+
+std devs  anomalies  pods with any  root cause rank  its anomalies  next pod  approved  on root cause
+     1.5        557              8           1 of 8            315        41         4              3
+     2.0        446              8           1 of 8            315        26         4              3
+     3.0        348              8           1 of 8            315         7         4              3
+     5.0        317              3           1 of 3            315         1         3              3
+     8.0        312              2           1 of 2            311         1         3              3
+
+Anomaly threshold on case 20240115 (LEMMA-RCA)
+
+std devs  anomalies  pods with any  root cause rank  its anomalies  next pod  approved  on root cause
+     1.5     760863            257       104 of 257           1624     10597        20              0
+     2.0     660831            257        80 of 257           1619      9650        20              0
+     3.0     559765            257        93 of 257            560      9189        20              0
+     5.0     473476            213        83 of 213            336      9180        20              0
+     8.0     412922            154        79 of 154            292      9158        20              0
+```
+
+On the sample, a higher threshold removes the false positives and the root cause stays first. On the real case, no threshold helps: even at 8 standard deviations, 154 pods have anomalies and the malware pod ranks 79th, because the bots and the victim deviate in many more features. The threshold can't fix a ranking that counts anomalies; try ranking by `max_deviation` in `rank_pods()` (`pipeline/plan.py`).
+
+**2. How long should a fusion window be?** The fuse stage aligns metrics and logs in 5-minute windows, and the incident is 3 windows in a row with the KPI below its threshold. This tries 1 to 20 minutes.
+
+```bash
+CASE=20240115 make try-window-size
+```
+
+```
+Window size on case 20240115 (LEMMA-RCA)
+
+  window  windows  incident found  incident start vs label  root cause rank  run time
+   1 min     2720             yes                 +0.3 min        79 of 257     10.6s
+ 2.5 min     1088             yes                 +0.8 min        79 of 257      4.0s
+   5 min      544             yes                 -1.6 min        80 of 257      2.3s
+  10 min      272             yes                 -6.7 min        83 of 256      1.2s
+  20 min      136             yes                 -6.7 min       100 of 254      0.8s
+```
+
+Short windows put the incident start within a minute of the label but take longer to compute; long windows blur it by several minutes. On the sample (`make try-window-size`), 10- and 20-minute windows miss the incident altogether: its 20 minutes are fewer than 3 windows.
+
+**3. How confident must a recommendation be to run without a person?** The check stage runs an action by itself at 0.85 confidence or more and sends the rest (down to 0.6) to a person. This tries 0.75 to 0.90.
+
+```bash
+make try-auto-approve
+CASE=20240115 make try-auto-approve
+```
+
+```
+Auto-approve confidence on the bundled synthetic sample
+
+confidence   run  to a person  rejected  run on root cause  run on other pods  stopped by a limit
+      0.75    11           17         0                  4                  7  0
+      0.80     7           21         0                  4                  3  0
+      0.85     4           24         0                  3                  1  0
+      0.88     1           27         0                  1                  0  0
+      0.90     0           28         0                  0                  0  0
+
+Auto-approve confidence on case 20240115 (LEMMA-RCA)
+
+confidence   run  to a person  rejected  run on root cause  run on other pods  stopped by a limit
+      0.75    20           10         0                  0                 20  10
+      0.80    20           10         0                  0                 20  10
+      0.85    20           10         0                  0                 20  10
+      0.88    10           20         0                  0                 10  0
+      0.90     0           30         0                  0                  0  0
+```
+
+On the real case, every action that runs at the default bar hits a victim or a bot, never the root cause, and only the limits (5 restarts and 20 actions a minute) stop more. Lowering the bar adds actions on the wrong pods on the sample too. The confidences come from fixed rule templates (0.89 for `scale_up`, 0.87 for `restart`), so the bar decides which kinds of action run, not which pods.
+
+## Use your own data
+
+Export your cluster's metrics and the signal your users see as CSV files in one folder:
+
+```
+my_cluster/
+  metrics.csv        timestamp, pod, metric, value          one row per sample; metric is any of
+                     cpu_usage, memory_usage, rate_received_packets, rate_transmitted_packets,
+                     rate_storage_iops, received_bandwidth, transmit_bandwidth
+  kpi.csv            timestamp, error_rate (0 to 1)  or  timestamp, latency_ms
+  logs.csv           timestamp, pod, golden_signal, frequency   (optional) log counts per pod
+  fault_label.json   {"root_cause_pod": "...", "failure_time": "2026-03-02T04:10:00Z"}   (optional)
+```
+
+Timestamps are unix seconds or ISO 8601 with a time zone. The recording needs at least an hour, so there is a baseline before the incident. Check the folder first. This reads every file and writes nothing:
+
+```bash
+make check-data DIR=my_cluster
+```
+
+```
+my_cluster: 8 pods, 3 metrics, 6.0 hours, KPI from error_rate, logs, a fault label. All checks passed.
+```
+
+It reports every problem with the file and the reason (at most 5 of each kind per file, then a count), and writes nothing if there is one. These are from a copy of that folder with mistakes put in on purpose:
+
+```
+7 problem(s) in broken; nothing was written:
+  metrics.csv line 2: metric 'cpu_seconds_total' is not one the pipeline reads (cpu_usage, memory_usage, rate_received_packets, rate_transmitted_packets, rate_storage_iops, received_bandwidth, transmit_bandwidth)
+  metrics.csv line 3: timestamp '2026-03-02 00:00:00' has no time zone (add Z for UTC)
+  metrics.csv line 4: value 'n/a' is not a number
+  metrics.csv line 6: second sample for web-5d8f-b2 cpu_usage at the same timestamp
+  kpi.csv line 11: error_rate 5.0 is outside 0 to 1 (a share, not a percent)
+  logs.csv: not UTF-8 text (byte 52)
+  fault_label.json: root_cause_pod 'payments-7f9c' has no rows in metrics.csv
+```
+
+It also checks for missing files and columns, Git LFS pointers, timestamps in milliseconds, a latency of 0 or less, a recording shorter than an hour, and a KPI whose timestamps don't overlap the metrics. Each of these would make the pipeline ignore data or find the wrong incident without saying so. When everything passes, convert and run it:
+
+```bash
+make load DIR=my_cluster
+```
+
+```
+Converted to data/lemma-rca/own-my_cluster/. Running the pipeline: python run_pipeline.py --case own-my_cluster
+...
+    2026-03-02 04:10 UTC to 2026-03-02 05:55 UTC (22 windows; KPI 0.998 before, 0.951 during)
+...
+Evaluation Against the Fault Label:
+  Root cause pod:         payments-7f9c-q2
+  Its rank:               1 of 8 pods (top 1: yes, top 3: yes)
+  Actions on it:          yes (18 actions on other pods)
+  Labelled failure:       2026-03-02T04:10:00Z
+  KPI incident start:     +0.0 min from the label
+```
+
+This folder was generated for the test: 8 pods over 6 hours at 15-second samples, in which one pod's CPU and memory climb from 04:10 UTC and the error rate rises with them. `make load` converts it the way `download_data.py` converts a LEMMA-RCA case (30-second means, one array per metric) and runs `python run_pipeline.py --case own-my_cluster`; the reports go to `output/lemma-rca-own-my_cluster/`. It took 2 s on a Mac. The pipeline warns about the 4 metrics the folder doesn't have and runs on the other 3. `make clean` deletes the converted folder and its reports.
+
+## What you end up with
+
+A six-stage root cause pipeline that runs on the sample, on six real LEMMA-RCA cases and on your own cluster's exports, with a score against the fault label for every run and a way to see why each pod ranks where it does.
+
+Skills you'll practice:
+- Aligning metrics, logs and a KPI from many pods on one time grid
+- Finding an incident from what users see, and baselining each pod against its own normal
+- Checking recommended actions against confidence gates, policies and rate limits
+- Scoring a diagnosis against labelled failures, and reading why it missed
+- Converting and validating your own monitoring exports before they reach the pipeline
+
+## Before production
+
+This playbook runs offline on recordings, and the act stage only simulates. Before you run something like it for real:
+
+1. **Rank by more than anomaly counts.** On case 20240115 the malware pod ranked 79th to 104th at every threshold tried ([Try this 1](#try-this)), although its network traffic was more than 20 standard deviations above normal ([Run it](#run-it), step 4). Weigh deviation size and timing (who deviated first), and follow the dependencies between pods. *Chapter 12, "Cross-Modal Correlation: Detect Cascading Failures" (page 476).*
+2. **Handle features that never varied.** A feature with no variation in the baseline is scored against a floor of 1e-9, so any rise counts: 126,171 of the 660,831 anomalies in case 20240115 are of this kind, and `make explain POD=gateway-stu901` shows a deviation of 1,000,000,000. Give such features a minimum spread, or score them separately. *Chapter 12, "Signal Granularity: Instrument Each Lane" (page 474).*
+3. **Tie confidence to evidence.** The rule-based confidences are fixed per action type, so a false positive gets the same score as the root cause: on the own-data test, a pod with 29 anomalies got the same three auto-approved actions as the root cause with 434 ([Use your own data](#use-your-own-data)). *Chapter 12, "Actionable Diagnostics: From Alert to Fix" (page 478).*
+4. **Run in shadow mode first.** On case 20240115, every action that would have run targeted a victim or a bot, and the rate limits stopped 10 more ([Try this 3](#try-this)). Log what the pipeline would do next to what people did, and promote it action by action. *Chapter 12, "Shadow Mode and Safe Promotion" (page 484).*
+5. **Pick the window for how fast you must know.** One-minute windows put the incident within 0.3 minutes of the label and took 10.6 s; 20-minute windows were 6.7 minutes off ([Try this 2](#try-this)). On a live stream, the window also sets the delay before an alert. *Chapter 12, "Benchmarking Production Readiness" (page 482).*
+6. **Enforce the data contract where data enters.** The ingest stage logs a warning for a missing metric file and goes on. `make check-data` checks a folder before a run; a live pipeline should check every batch and quarantine what fails. *Chapter 12, "Pattern 1: On-the-Wire Contracts" (page 455); Chapter 12, "Schema Validation at the Edge" (page 469).*
+7. **Say when a modality is missing.** Case 20240207 has no logs and 20240124 has no log-frequency file; the pipeline runs on what it has but the report doesn't say its evidence is thinner. *Chapter 12, "Resilient Operation Under Modality Failure" (page 490).*
+8. **Keep a labelled set of incidents.** Every run is scored against its fault label (`pipeline/evaluate.py`); keep scoring every change against all six cases and your own past incidents. *Chapter 12, "Evaluation and Feedback Loops" (page 493).*
+9. **Treat LLM answers as untrusted.** With an LLM key set, the model's own confidence goes straight into the confidence gate; only its action name is checked against the allowed list. Check its answer against the evidence before it can approve anything. *Chapter 11, "Adversarial Threats to Multimodal LLMs" (page 424).*
+
+## What it costs
+
+| Where you run it | Cost |
+|---|---|
+| Your machine | $0 with the rule-based analysis (the default): no API keys, no paid services. About 140 MB for the environment; each LEMMA-RCA case adds about 35 MB, plus about 200 MB in the download cache. |
+| A GitHub Codespace (2 cores, 8 GB, the default size; this repo asks for none) | Estimated $0.18 per hour at GitHub's list price (November 2026). A free personal account includes 120 core-hours a month, about 60 hours on this machine. In CI, `make run` in a clean devcontainer (the dependencies were installed while the container was created) took 2 s; the whole job took under a minute. |
+| An LLM for the analysis (optional) | Not run for this update. Estimated at most $0.09 per run of case 20240115 with `gpt-4o` and at most $0.06 per run of the sample, at OpenAI's list price of $2.50 per million input tokens and $10.00 per million output tokens ([OpenAI pricing](https://developers.openai.com/api/docs/pricing), November 2026). The run makes one call per analysed pod: 10 calls with 50,409 characters of prompts for case 20240115, and 8 calls with 17,277 characters for the sample, measured by recording the prompts without sending them; at about 4 characters per token that is about 12,600 and 4,300 input tokens, plus at most 500 output tokens per call. |
+
+## How it works
+
+The pipeline has six stages, for IT-operations root cause analysis (RCA) on the LEMMA-RCA cloud dataset: a Kubernetes cluster of about 260 pods, with injected failures.
 
 1. **Ingest:** load the pod metrics (CPU, memory, network, storage), the log signals, the service KPI and the fault label.
 2. **Fuse:** align metrics and logs by pod and 5-minute time window into one feature table.
@@ -24,7 +277,9 @@ It runs on two kinds of data:
 | Size | 8 pods, 5,000 steps, 3 MB | about 260 pods, 45 hours at 30-second resolution, 37 MB per case (a ~200 MB download) |
 | What it shows | The pipeline end to end: the six stages take a tenth of a second (the first run after installing takes about 15 s while Python loads the libraries) | What RCA is like on a real cluster: a few seconds per case |
 
-## Quick start
+## Run it the way the book does
+
+These are the book's steps in "Running the Playbook" (page 498), with the fixes listed in [Differences from the printed book](#differences-from-the-printed-book).
 
 You need Python 3.12 or newer and about 150 MB of disk space for the environment. Add about 250 MB per LEMMA-RCA case (the download cache plus the converted files).
 
@@ -39,7 +294,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-With [uv](https://docs.astral.sh/uv/): `uv sync`, then prefix commands with `uv run`. The Makefile has shortcuts: `make run`, `make run-lemma`, `make run-20240207`, `make smoke`.
+With [uv](https://docs.astral.sh/uv/): `uv sync`, then prefix commands with `uv run`. The Makefile has shortcuts: `make run`, `make run-lemma`, `make run-20240207`, `make smoke`; `make explain`, `make check-data`, `make load` and `make try-*` are described in [Run it](#run-it), [Use your own data](#use-your-own-data) and [Try this](#try-this).
 
 ### 1. Run it on the bundled sample
 
@@ -99,7 +354,7 @@ export LLM_MODEL="gpt-4o"  # optional, defaults to gpt-4o
 python run_pipeline.py
 ```
 
-The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based. The book's `export ANTHROPIC_API_KEY=...` (page 499) is not read by the code; use the three variables above with the provider's OpenAI-compatible endpoint. They are listed in `.env.example`.
+The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based. The book's `export ANTHROPIC_API_KEY=...` (page 498) is not read by the code; use the three variables above with the provider's OpenAI-compatible endpoint. They are listed in `.env.example`.
 
 ### Individual stages
 
@@ -138,10 +393,10 @@ The printed commands still work: `pip install -r requirements.txt`, `python down
 
 | Area | First edition | Now |
 |---|---|---|
-| Folder | The book's `cd streamkit-ops-playbook` (page 499) | `cd playbook-12-multimodal-streamkit-ops-pipeline` |
-| `python run_pipeline.py` after the download (page 499) | Ran the synthetic sample | Still runs the sample, and prints the `--case` command for the downloaded case |
-| LLM | The book's `ANTHROPIC_API_KEY` (page 499) was never read; the code read `LLM_API_KEY` | Unchanged: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` |
-| Other cases (page 499) | Could not run | All six run (table above) |
+| Folder | The book's `cd streamkit-ops-playbook` (page 498) | `cd playbook-12-multimodal-streamkit-ops-pipeline` |
+| `python run_pipeline.py` after the download (page 498) | Ran the synthetic sample | Still runs the sample, and prints the `--case` command for the downloaded case |
+| LLM | The book's `ANTHROPIC_API_KEY` (page 498) was never read; the code read `LLM_API_KEY` | Unchanged: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` |
+| Other cases (page 498) | Could not run | All six run (table above) |
 | Sample data | Presented as LEMMA-RCA output | Labelled as what it is: synthetic data with made-up pod names (see [Data and licenses](#data-and-licenses)). Kept unchanged as the default |
 | Real data | `download_data.py` unzipped into a layout the pipeline doesn't read, so every run used the synthetic files | Real cases are converted into the pipeline's format and run with `--case` |
 | Baseline | "The first 70% of the data" was the first 70% of rows, which are sorted by pod name. So the baseline was the first 6 pods alphabetically, and the 3 "affected pods" were simply the last 3 alphabetically | Split by time, the same for every pod. The baseline is each pod's normal (KPI fine) windows before the incident; the analysis covers the incident |
@@ -162,7 +417,7 @@ The pipeline is still the book's: the same six stages, z-score anomalies (2 σ),
 | Data | Source | License |
 |---|---|---|
 | `data/20240115/` (bundled) | Synthetic, committed with the first edition (how it was generated is not recorded). It is not LEMMA-RCA data: the values are seeded random numbers, 7 of the 8 pod names are made up, and the 8th pod (the "malware" pod) borrows its name and fault label from LEMMA-RCA case 20240115. Its `fault_labels.json` gives the real case's failure time, which the sample has no clock for, and its `inject_time` text doesn't match its own `inject_timestamp` (2024-01-14 07:26:39 UTC). The files are kept as committed | MIT, like the code |
-| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial), per the dataset card at that revision; the book (page 497) says CC BY-ND 4.0. Not redistributed here; `download_data.py` fetches it |
+| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial), per the dataset card at that revision; the book (page 495) says CC BY-ND 4.0. Not redistributed here; `download_data.py` fetches it |
 
 ## Expected output
 
@@ -595,6 +850,8 @@ Evaluation Against the Fault Label:
   Labelled failure:       2024-02-06T05:20:41Z
   KPI incident start:     -3.7 min from the label
 ```
+
+If this playbook helped you, a star helps other readers find it.
 
 ## License
 
