@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased (v1.1.0)
+
+Nothing the book shows has changed.
+
+### Added
+- `make setup`. `make run` now depends on it.
+- `run_pipeline.py --output-dir DIR`: write the reports to another folder. Without it the reports go
+  to `output/` (or `output/lemma-rca-<case>/` with `--case`), as before.
+- `.devcontainer/` so the repo opens in GitHub Codespaces with dependencies installed.
+- CI: a weekly scheduled run, a `make run` step that checks no tracked file changed, and a job that
+  builds the devcontainer and runs `make run` inside it.
+
+### Changed
+- `make run` writes its reports to `output/make-run/` (gitignored). It used to rewrite the committed
+  `output/observability_report.json` and `output/observability_dashboard.txt`. `make clean` also
+  removes `output/make-run/`. Every `uv run` in the Makefile uses `--frozen`.
+
 ## 2026.10.1 (2026-10-27)
 
 Checked against the book (Early Release, pages 496–500).

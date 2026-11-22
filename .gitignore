@@ -4,6 +4,8 @@ __pycache__/
 # Downloaded LEMMA-RCA cases and their reports (the synthetic sample in data/20240115/ is committed)
 data/lemma-rca/
 output/lemma-rca-*/
+# make run writes here, so the committed output/ files stay as the book shows them
+output/make-run/
 .venv/
 .pytest_cache/
 .env

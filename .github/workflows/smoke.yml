@@ -4,6 +4,8 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly, Monday 06:00 UTC, so breakage in upstream packages shows up
 
 jobs:
   smoke:
@@ -19,6 +21,10 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.0
       - name: Smoke test (synthetic sample)
         run: make smoke
+      - name: One-command run
+        run: |
+          make run
+          git diff --exit-code   # make run writes to output/make-run/, not the committed output/ files
       - name: Cache the LEMMA-RCA downloads
         uses: actions/cache@v6
         with:
@@ -54,3 +60,14 @@ jobs:
             uv run python run_pipeline.py --case $case | tee /tmp/run.log
             sed -n '/Evaluation Against the Fault Label/,/^====/p' /tmp/run.log
           done
+
+  devcontainer:
+    # Builds .devcontainer/ the way Codespaces does and runs the playbook inside it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the devcontainer and run the playbook
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: make run
