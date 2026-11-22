@@ -1,6 +1,6 @@
 # StreamKit Ops Playbook
 
-**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026), pages 496–500 (Early Release page numbers; they may differ in the final print).
+**Chapter 12 playbook** from *Data Engineering for Multimodal AI* (O'Reilly, 2026), pages 494–499.
 Book: https://oreil.ly/data-engineering-multimodal
 
 > Want the code exactly as printed? Use the `first-edition` tag. This branch is the 2026 maintenance update; see [Differences from the printed book](#differences-from-the-printed-book).
@@ -99,7 +99,7 @@ export LLM_MODEL="gpt-4o"  # optional, defaults to gpt-4o
 python run_pipeline.py
 ```
 
-The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based. The book's `export ANTHROPIC_API_KEY=...` (page 499) is not read by the code; use the three variables above with the provider's OpenAI-compatible endpoint. They are listed in `.env.example`.
+The LLM gets each top pod's 50 strongest deviations and returns a root cause, an action and a confidence. If a call fails, that pod falls back to the rule-based analysis. This path was not run for this update; all output below is rule-based. The book's `export ANTHROPIC_API_KEY=...` (page 498) is not read by the code; use the three variables above with the provider's OpenAI-compatible endpoint. They are listed in `.env.example`.
 
 ### Individual stages
 
@@ -138,10 +138,10 @@ The printed commands still work: `pip install -r requirements.txt`, `python down
 
 | Area | First edition | Now |
 |---|---|---|
-| Folder | The book's `cd streamkit-ops-playbook` (page 499) | `cd playbook-12-multimodal-streamkit-ops-pipeline` |
-| `python run_pipeline.py` after the download (page 499) | Ran the synthetic sample | Still runs the sample, and prints the `--case` command for the downloaded case |
-| LLM | The book's `ANTHROPIC_API_KEY` (page 499) was never read; the code read `LLM_API_KEY` | Unchanged: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` |
-| Other cases (page 499) | Could not run | All six run (table above) |
+| Folder | The book's `cd streamkit-ops-playbook` (page 498) | `cd playbook-12-multimodal-streamkit-ops-pipeline` |
+| `python run_pipeline.py` after the download (page 498) | Ran the synthetic sample | Still runs the sample, and prints the `--case` command for the downloaded case |
+| LLM | The book's `ANTHROPIC_API_KEY` (page 498) was never read; the code read `LLM_API_KEY` | Unchanged: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` |
+| Other cases (page 498) | Could not run | All six run (table above) |
 | Sample data | Presented as LEMMA-RCA output | Labelled as what it is: synthetic data with made-up pod names (see [Data and licenses](#data-and-licenses)). Kept unchanged as the default |
 | Real data | `download_data.py` unzipped into a layout the pipeline doesn't read, so every run used the synthetic files | Real cases are converted into the pipeline's format and run with `--case` |
 | Baseline | "The first 70% of the data" was the first 70% of rows, which are sorted by pod name. So the baseline was the first 6 pods alphabetically, and the 3 "affected pods" were simply the last 3 alphabetically | Split by time, the same for every pod. The baseline is each pod's normal (KPI fine) windows before the incident; the analysis covers the incident |
@@ -162,7 +162,7 @@ The pipeline is still the book's: the same six stages, z-score anomalies (2 σ),
 | Data | Source | License |
 |---|---|---|
 | `data/20240115/` (bundled) | Synthetic, committed with the first edition (how it was generated is not recorded). It is not LEMMA-RCA data: the values are seeded random numbers, 7 of the 8 pod names are made up, and the 8th pod (the "malware" pod) borrows its name and fault label from LEMMA-RCA case 20240115. Its `fault_labels.json` gives the real case's failure time, which the sample has no clock for, and its `inject_time` text doesn't match its own `inject_timestamp` (2024-01-14 07:26:39 UTC). The files are kept as committed | MIT, like the code |
-| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial), per the dataset card at that revision; the book (page 497) says CC BY-ND 4.0. Not redistributed here; `download_data.py` fetches it |
+| LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial), per the dataset card at that revision; the book (page 495) says CC BY-ND 4.0. Not redistributed here; `download_data.py` fetches it |
 
 ## Expected output
 
