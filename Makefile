@@ -1,4 +1,4 @@
-.PHONY: setup smoke run data data-20240207 run-lemma run-20240207 clean
+.PHONY: setup smoke run data data-20240207 run-lemma run-20240207 explain check-data load try-anomaly-threshold try-window-size try-auto-approve clean
 
 # A bare `make` runs the smoke test, as it did before the uniform targets were added.
 .DEFAULT_GOAL := smoke
@@ -34,7 +34,37 @@ data-20240207:
 run-20240207: data-20240207
 	uv run --frozen python run_pipeline.py --case 20240207
 
+# Why does a pod rank where it does? make explain POD=gateway-stu901 [CASE=20240115]
+explain: setup
+	@test -n "$(POD)" || { echo "Usage: make explain POD=pod-name [CASE=20240115]"; exit 2; }
+	@uv run --frozen python scripts/explain_pod.py --pod "$(POD)" $(if $(CASE),--case "$(CASE)")
+
+# Your own cluster: metrics.csv, kpi.csv and optional logs.csv and fault_label.json in DIR
+# (see README, "Use your own data"). check-data checks every file and writes nothing; load converts
+# the folder to data/lemma-rca/own-<name>/ and runs the pipeline on it.
+#   make check-data DIR=my_cluster
+#   make load DIR=my_cluster
+check-data: setup
+	@test -n "$(DIR)" || { echo "Usage: make check-data DIR=path/to/folder"; exit 2; }
+	@uv run --frozen python scripts/own_cluster.py --dir "$(DIR)" --check-only
+
+load: setup
+	@test -n "$(DIR)" || { echo "Usage: make load DIR=path/to/folder"; exit 2; }
+	@uv run --frozen python scripts/own_cluster.py --dir "$(DIR)"
+
+# Try this: three measured experiments (see README, "Try this"), rule-based, nothing written.
+# On the bundled sample; CASE=20240115 runs a downloaded case (make data first).
+try-anomaly-threshold: setup
+	@uv run --frozen python experiments/anomaly_threshold.py
+
+try-window-size: setup
+	@uv run --frozen python experiments/window_size.py
+
+try-auto-approve: setup
+	@uv run --frozen python experiments/auto_approve.py
+
 # Remove generated files: downloaded cases, their reports and the make run reports.
 # The synthetic sample in data/20240115/ and the committed output/ files are kept.
+# Converted own data (data/lemma-rca/own-*) and its reports (output/lemma-rca-own-*) go too.
 clean:
 	rm -rf data/lemma-rca output/lemma-rca-* output/make-run .pytest_cache
