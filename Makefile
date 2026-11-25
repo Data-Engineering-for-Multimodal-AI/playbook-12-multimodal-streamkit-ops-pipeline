@@ -19,6 +19,7 @@ smoke:
 # (gitignored), so the committed output/ files are left as they are.
 run: setup
 	uv run --frozen python run_pipeline.py --output-dir output/make-run/
+	@echo "playbook-12-multimodal-streamkit-ops-pipeline" > .playbook-done
 
 # LEMMA-RCA case 20240115 (193 MB download, 37 MB kept), then the pipeline on it
 data:
