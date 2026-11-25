@@ -1,5 +1,15 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/header-dark.png">
+  <img src="docs/img/header-light.png" alt="Playbook 12 of 12, Chapter 12 of Data Engineering for Multimodal AI. Build: a root cause analysis pipeline. Data: metrics, logs and alerts." width="100%">
+</picture>
+
 # Playbook 12: Find the root cause of failures in a Kubernetes cluster
 **How to build an end-to-end multimodal root cause analysis pipeline.** Chapter 12 of [*Data Engineering for Multimodal AI*](https://oreil.ly/data-engineering-multimodal) (O'Reilly, 2026), pages 494–499.
+
+[![Tests](https://github.com/Data-Engineering-for-Multimodal-AI/playbook-12-multimodal-streamkit-ops-pipeline/actions/workflows/smoke.yml/badge.svg?branch=main)](https://github.com/Data-Engineering-for-Multimodal-AI/playbook-12-multimodal-streamkit-ops-pipeline/actions/workflows/smoke.yml)
+![Python 3.12 | 3.13](https://img.shields.io/badge/python-3.12%20%7C%203.13-1f1a19?labelColor=6b6361)
+[![License: MIT](https://img.shields.io/badge/license-MIT-1f1a19?labelColor=6b6361)](LICENSE)
+[![Open in GitHub Codespaces](https://img.shields.io/badge/Open%20in-Codespaces-b4422e?logo=github&labelColor=6b6361)](https://codespaces.new/Data-Engineering-for-Multimodal-AI/playbook-12-multimodal-streamkit-ops-pipeline?quickstart=1)
 
 When a system breaks, the clues are spread across metrics, logs and alerts, and someone has to put them together to find the cause. The chapter's running example is StreamKit, a fictional contact-center agent framework; in this repo, we apply the same pattern to IT operations with the LEMMA-RCA dataset, a Kubernetes cluster with injected failures. Follow along to build all six stages, from ingesting the signals to acting on the diagnosis and watching the result.
 
@@ -260,6 +270,18 @@ This playbook runs offline on recordings, and the act stage only simulates. Befo
 
 ## How it works
 
+```mermaid
+flowchart LR
+  A["LEMMA-RCA case<br/>or bundled sample"] --> B["Ingest<br/>metrics, logs, KPI, label"]
+  B --> C["Fuse<br/>pod and 5-minute window"]
+  C --> D["Plan<br/>rank pods, recommend actions"]
+  D --> E["Check<br/>guardrails"]
+  E --> F["Act<br/>simulated, no cluster"]
+  F --> G["Observe<br/>JSON report and dashboard"]
+  classDef key fill:#ffe8e3,stroke:#b4422e,color:#1f1a19
+  class D key
+```
+
 The pipeline has six stages, for IT-operations root cause analysis (RCA) on the LEMMA-RCA cloud dataset: a Kubernetes cluster of about 260 pods, with injected failures.
 
 1. **Ingest:** load the pod metrics (CPU, memory, network, storage), the log signals, the service KPI and the fault label.
@@ -419,7 +441,7 @@ The pipeline is still the book's: the same six stages, z-score anomalies (2 σ),
 | `data/20240115/` (bundled) | Synthetic, committed with the first edition (how it was generated is not recorded). It is not LEMMA-RCA data: the values are seeded random numbers, 7 of the 8 pod names are made up, and the 8th pod (the "malware" pod) borrows its name and fault label from LEMMA-RCA case 20240115. Its `fault_labels.json` gives the real case's failure time, which the sample has no clock for, and its `inject_time` text doesn't match its own `inject_timestamp` (2024-01-14 07:26:39 UTC). The files are kept as committed | MIT, like the code |
 | LEMMA-RCA cases (downloaded) | [Lemma-RCA-NEC/Cloud_Computing_Preprocessed](https://huggingface.co/datasets/Lemma-RCA-NEC/Cloud_Computing_Preprocessed), revision `03f82a2c`. L. Zheng, Z. Chen, D. Wang, C. Deng, R. Matsuoka, H. Chen, "LEMMA-RCA: A Large Multi-modal Multi-domain Dataset for Root Cause Analysis", [arXiv:2406.05375](https://arxiv.org/abs/2406.05375) | CC BY-NC 4.0 (non-commercial), per the dataset card at that revision; the book (page 495) says CC BY-ND 4.0. Not redistributed here; `download_data.py` fetches it |
 
-The full list, with sources, licenses and citations, is in [DATA_LICENSES.md](DATA_LICENSES.md).
+The full list, with sources, licenses and citations, is in [DATA_SOURCES.md](DATA_SOURCES.md).
 
 ## Expected output
 
@@ -855,6 +877,19 @@ Evaluation Against the Fault Label:
 
 If this playbook helped you, a star helps other readers find it.
 
+## Troubleshooting
+
+**`python run_pipeline.py` says "Using the bundled sample" after you downloaded a case.** Without `--case` it runs the sample. Run `python run_pipeline.py --case 20240115`, or `make run-lemma`.
+
+**`python run_pipeline.py --case 20240215` stops with "No data for case 20240215".** That case isn't downloaded yet. Run `python download_data.py --case 20240215` first (`python download_data.py --list` shows the cases).
+
+**The analysis stays rule-based with `ANTHROPIC_API_KEY` set.** The code doesn't read that variable. Set `LLM_API_KEY`, and `LLM_BASE_URL` and `LLM_MODEL` for a provider other than OpenAI, as in `.env.example`.
+
 ## License
 
 MIT; see [LICENSE](LICENSE). LEMMA-RCA data is CC BY-NC 4.0 and is downloaded, not included.
+
+---
+
+[The book](https://oreil.ly/data-engineering-multimodal) · [All playbooks](https://github.com/Data-Engineering-for-Multimodal-AI#playbooks) · Previous: [Playbook 11](https://github.com/Data-Engineering-for-Multimodal-AI/playbook-11-multimodal-governance-pipeline) · Next: [Playbook 12 bonus](https://github.com/Data-Engineering-for-Multimodal-AI/playbook-12-bonus-multimodal-rca-pipeline)
+<!-- Substack post for this playbook: add link here -->
